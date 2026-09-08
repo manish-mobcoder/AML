@@ -1,6 +1,6 @@
 <div align="center">
   <h1>@cyanheads/sanctions-screening-mcp-server</h1>
-  <p><b>Screen names against the consolidated OFAC, EU, UK, and UN sanctions lists and resolve legal entities against GLEIF, fuzzy-matched offline over a local SQLite + FTS5 mirror. A screening aid, not a compliance determination.</b>
+  <p><b>Screen names against OFAC, EU, UK, UN, India (UAPA + FEO/NIA), and UAE Local lists and resolve legal entities against GLEIF, fuzzy-matched offline over a local SQLite + FTS5 mirror. A screening aid, not a compliance determination.</b>
   <div>6 Tools • 3 Resources • 1 Prompt</div>
   </p>
 </div>
@@ -28,9 +28,11 @@
 
 ## Overview
 
-`sanctions-screening-mcp-server` turns the world's open sanctions data plus the global legal-entity registry into one screening-and-resolution workflow, answered offline and fuzzy-matched. It screens a name against the consolidated US (OFAC), EU, UK, and UN sanctions lists at once, and resolves legal entities against the GLEIF Legal Entity Identifier (LEI) database with corporate-ownership tracing.
+`sanctions-screening-mcp-server` turns open sanctions data plus the global legal-entity registry into one screening-and-resolution workflow, answered offline and fuzzy-matched. It screens a name against OFAC (SDN + Consolidated), EU, UK, UN, India UAPA, a curated India FEO/NIA watchlist, and the UAE Local Terrorist List at once, and resolves legal entities against the GLEIF Legal Entity Identifier (LEI) database with corporate-ownership tracing.
 
-All sources are bulk-downloadable, keyless, and clear for redistribution. The server mirrors them to a local SQLite + FTS5 index and serves matches from that mirror — no live API key, no per-request rate limit on the hot path. The agent sees screening verbs (`screen_name`, `resolve_entity`, `trace_ownership`); which list answered a query surfaces only as provenance on each hit.
+OFAC, EU, UK, UN, and GLEIF are bulk-downloadable and keyless. India UAPA and UAE Local default to OpenSanctions FollowTheMoney exports of those official lists (the portals do not publish a stable bulk XML feed). The India FEO/NIA list is bundled and curated — not a live Enforcement Directorate / NIA download. The server mirrors everything to a local SQLite + FTS5 index and serves matches from that mirror. The agent sees screening verbs (`screen_name`, `resolve_entity`, `trace_ownership`); which list answered a query surfaces only as provenance on each hit.
+
+An HTTP sidecar (`POST /api/aml/screen-person`) screens a person name against the same mirror for non-MCP callers.
 
 The matching model is transparent by design: strict token matching first (exact-normalized, then all-tokens-present via FTS5), with a scored Jaro-Winkler + phonetic fuzzy fallback. Approximate hits carry the **raw Jaro-Winkler similarity (0–1)** — a real measurement, never a fabricated "confidence percentage."
 
@@ -40,7 +42,7 @@ Six tools organized around two workflows — screen a name against the watchlist
 
 | Tool | Description |
 |:---|:---|
-| `sanctions_screen_name` | Screen a name (person, company, vessel, aircraft) against all loaded watchlists at once — OFAC SDN + Consolidated, EU, UK, UN — alias- and fuzzy-aware. Returns scored potential matches with source list, program, designation date, and the matched alias. |
+| `sanctions_screen_name` | Screen a name (person, company, vessel, aircraft) against all loaded watchlists at once — OFAC SDN + Consolidated, EU, UK, UN, India UAPA, India FEO/NIA, UAE Local — alias- and fuzzy-aware. Returns scored potential matches with source list, program, designation date, and the matched alias. |
 | `sanctions_get_designation` | Fetch the full record for one sanctions designation by source list + entry ID: all aliases, identifiers, addresses, dates/places of birth, nationalities, program, legal basis, and designation date. |
 | `sanctions_resolve_entity` | Resolve a company / organization name (+ optional jurisdiction) to ranked candidate GLEIF LEIs. Turns a free-text counterparty name into a stable global identifier. |
 | `sanctions_get_entity` | Fetch the full GLEIF Level 1 record for one LEI — legal name, trading names, addresses, registration status, jurisdiction — plus a sanctions cross-reference screened on the legal name. |
@@ -51,7 +53,7 @@ Six tools organized around two workflows — screen a name against the watchlist
 
 The 80% entry point — "is this entity on a watchlist?"
 
-- Fans out across all four sanctions lists (OFAC SDN + Consolidated, EU, UK, UN) in one call; the source surfaces only as provenance per hit
+- Fans out across all loaded watchlists (OFAC SDN + Consolidated, EU, UK, UN, India UAPA, India FEO/NIA, UAE Local) in one call; the source surfaces only as provenance per hit
 - Alias-aware: matches against every published primary name, a.k.a., and f.k.a., not just the canonical name
 - Strict mode (default): exact-normalized equality, then all-tokens-present via FTS5 — handles word-order swaps and missing interior words with no fuzzy library
 - Fuzzy mode (opt-in, or automatic when strict finds nothing): adds Jaro-Winkler similarity and Double-Metaphone phonetic matching for transliteration-class misses
@@ -121,19 +123,43 @@ Beneficial-ownership screening — the cross-source workflow that single-list to
 
 All resource data is also reachable via the tools, which are the primary path for tool-only MCP clients. The resources are a convenience for resource-capable clients only.
 
+## AML HTTP API
+
+When the server starts (including `bun run start:http`), it also binds a small REST sidecar for non-MCP callers.
+
+- **URL:** `POST http://127.0.0.1:3011/api/aml/screen-person` (override with `AML_API_HOST` / `AML_API_PORT`)
+- **Body:** `{ "name": "…", "dateOfBirth": "YYYY-MM-DD", "countryOfBirth": "…" }` — `name` is required; DOB and country are optional and only affect scoring after a name hit
+- **Match mode:** strict name match against persons on all loaded watchlists (no fuzzy auto-fallback)
+- **Response:** `status` (`potential_match` / `no_match`), `matchScore` (best hit: **100** name+DOB+country, **80** name+DOB, **60** name+country, **40** name only, **0** none), and `matches[]` with per-source flags
+
+This is the same screening aid as the MCP tools: a hit is a candidate to verify; `no_match` is not a clearance. There is no auth on this sidecar — keep it on localhost or put it behind your own gateway.
+
+Example:
+
+```sh
+curl -s -X POST http://127.0.0.1:3011/api/aml/screen-person \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Vijay Mallya","dateOfBirth":"1955-12-18","countryOfBirth":"India"}'
+```
+
 ## Source lists
 
-The server aggregates five upstream sources behind the screening surface. All are bulk, keyless, and clear for redistribution.
+The screening surface aggregates the following lists. OFAC, EU, UK, UN, and GLEIF are official bulk feeds. India UAPA and UAE Local are harvested from OpenSanctions exports of the official MHA / EOCN lists. India FEO/NIA is a bundled curated file (not a live ED/NIA bulk feed).
 
-| Source | Role | License |
-|:---|:---|:---|
-| **OFAC SDN + Consolidated** (US Treasury) | Primary US sanctions/watchlist — individuals, entities, vessels, aircraft, with a.k.a. aliases | US Government public domain |
-| **EU Consolidated Financial Sanctions List** | EU-designated persons and entities | Freely redistributable |
-| **UK Sanctions List (UKSL, FCDO)** | UK sanctions targets — persons, entities, ships | Open Government Licence v3.0 |
-| **UN Security Council Consolidated List** | UN-designated individuals and entities across all regimes | Freely redistributable |
-| **GLEIF LEI (Level 1 + Level 2)** | Who-is-who (entity reference) and who-owns-whom (corporate ownership) | CC0 1.0 Universal |
+| Source | Code | Role | License / notes |
+|:---|:---|:---|:---|
+| **OFAC SDN + Consolidated** (US Treasury) | `ofac_sdn`, `ofac_consolidated` | Primary US sanctions/watchlist — individuals, entities, vessels, aircraft, with a.k.a. aliases | US Government public domain |
+| **EU Consolidated Financial Sanctions List** | `eu` | EU-designated persons and entities | Freely redistributable |
+| **UK Sanctions List (UKSL, FCDO)** | `uk` | UK sanctions targets — persons, entities, ships | Open Government Licence v3.0 |
+| **UN Security Council Consolidated List** | `un` | UN-designated individuals and entities across all regimes | Freely redistributable |
+| **India UAPA** (MHA) | `india_uapa` | Banned organisations and designated individual terrorists under UAPA | Official MHA publication via OpenSanctions FTM export — confirm commercial redistribution terms |
+| **India FEO / NIA Most Wanted** | `india_watchlist` | Curated fugitive economic offenders and NIA most-wanted names (e.g. Vijay Mallya, Nirav Modi) | Bundled compilation — not a live official bulk feed; verify against the cited source |
+| **UAE Local Terrorist List** (EOCN) | `uae_local` | UAE Cabinet / UNSCR 1373 local terrorist list | Official EOCN list via OpenSanctions FTM export — confirm commercial redistribution terms |
+| **GLEIF LEI (Level 1 + Level 2)** | `gleif` | Who-is-who (entity reference) and who-owns-whom (corporate ownership) | CC0 1.0 Universal |
 
 The UK source is the **UK Sanctions List (UKSL)**, the single authoritative UK source since the OFSI Consolidated List closed on 28 January 2026.
+
+India UAPA is **not** the Enforcement Directorate FEO list. Names such as Vijay Mallya and Nirav Modi are on `india_watchlist`, not `india_uapa`.
 
 ### First run: populate the mirror
 
@@ -143,14 +169,15 @@ The mirror is **not bundled** — the sanctions lists and the GLEIF golden copy 
 bun run mirror:init
 ```
 
-This streams all five sanctions lists in full, rebuilds the per-alias name index, then streams the GLEIF golden copy (Level 1 entities + Level 2 ownership relationships). It is resumable and intended to run once, off the request path.
+This streams the sanctions lists in full (including India UAPA, India FEO/NIA, and UAE Local), rebuilds the per-alias name index, then streams the GLEIF golden copy (Level 1 entities + Level 2 ownership relationships). It is resumable and intended to run once, off the request path.
 
 | Script | Purpose |
 |:---|:---|
 | `bun run mirror:init` | Full initial load of all sources (sanctions lists + GLEIF golden copy). |
-| `bun run mirror:refresh` | Re-harvest the sanctions lists and apply GLEIF deltas. The sanctions half (lists + name index) also runs on a cron under HTTP transport; GLEIF deltas are manual. |
+| `bun run mirror:refresh` | Re-harvest the sanctions lists and apply GLEIF deltas. The sanctions half (lists + name index) also runs on a cron under HTTP transport; GLEIF deltas are manual. First source (OFAC SDN) can take several minutes with no log line until it finishes. |
 | `bun run mirror:verify` | Report mirror readiness and per-source record counts. |
 | `bun run mirror:seed` | Load a small synthetic fixture for local smoke tests (no downloads). |
+| `bun run mirror:load-india-uae` | Load India UAPA, the bundled India FEO/NIA watchlist, and UAE Local into an existing mirror without re-harvesting OFAC/EU/UK/UN. |
 
 Set `SANCTIONS_INIT_SKIP_GLEIF=1` on `mirror:init` to load the sanctions lists only and skip GLEIF.
 
@@ -169,9 +196,10 @@ Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp
 
 Sanctions-specific:
 
-- Multi-source, workflow-organized surface — one screen fans out across OFAC, EU, UK, and UN internally; sources surface only as provenance
+- Multi-source, workflow-organized surface — one screen fans out across OFAC, EU, UK, UN, India, and UAE internally; sources surface only as provenance
 - Local SQLite + FTS5 mirror via the framework `MirrorService` — offline, no live API key, no per-request rate limit
-- Normalized common schema across the four sanctions lists, with a denormalized per-alias name index (one row per name and per alias) so a query matches any of an entity's names in one FTS scan
+- Normalized common schema across all sanctions lists, with a denormalized per-alias name index (one row per name and per alias) so a query matches any of an entity's names in one FTS scan
+- REST sidecar for person screening (`/api/aml/screen-person`) with a transparent name/DOB/country `matchScore`
 - Strict-then-fuzzy matching: exact-normalized → all-tokens-present (FTS5) → Jaro-Winkler + Double-Metaphone, capped to bound work on short queries
 - GLEIF Level 1 + Level 2 ingest for entity resolution and beneficial-ownership tracing
 
@@ -242,7 +270,8 @@ For Streamable HTTP, set the transport and start the server:
 
 ```sh
 MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
-# Server listens at http://localhost:3010/mcp
+# MCP listens at http://localhost:3010/mcp
+# AML REST sidecar listens at http://127.0.0.1:3011/api/aml/screen-person
 ```
 
 ### Prerequisites
@@ -298,13 +327,18 @@ All sources are keyless — there is no required API key. Every variable below i
 | `EU_FSF_URL` | Override for the EU consolidated XML file (includes the static public token path component). | official EU URL |
 | `UK_SANCTIONS_URL` | Override for the UK Sanctions List (UKSL) XML file. | official FCDO URL |
 | `UN_SC_URL` | Override for the UN Security Council consolidated XML file. | official UN URL |
+| `INDIA_UAPA_URL` | Harvest URL for India UAPA (MHA banned orgs / individuals). | OpenSanctions `in_mha_banned` FTM JSONL |
+| `INDIA_WATCHLIST_URL` | Provenance label for the bundled India FEO / NIA list (not a download URL). | `bundled:india-watchlist …` |
+| `UAE_LOCAL_URL` | Harvest URL for the UAE Local Terrorist List. | OpenSanctions `ae_local_terrorists` FTM JSONL |
 | `GLEIF_GOLDEN_COPY_BASE_URL` | Override for the GLEIF golden-copy / delta download API. | `https://goldencopy.gleif.org` |
+| `AML_API_HOST` | Bind address for the AML REST sidecar. | `127.0.0.1` |
+| `AML_API_PORT` | Port for the AML REST sidecar. | `3011` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_SESSION_MODE` | Session mode: `auto` (resolves to stateful), `stateful`, or `stateless`. The shipped `.env.example` and Docker image pin stateless — no tool here needs a multi-round-trip input. | `stateless` |
 | `MCP_HTTP_PORT` | Port for the HTTP server. | `3010` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424). | `info` |
 
-Source URLs default to the verified official endpoints; overrides exist for testing and for pinning a mirror in restricted environments. The EU "token" is a static public path component, not a credential.
+OFAC/EU/UK/UN URLs default to the verified official endpoints. India UAPA and UAE Local default to OpenSanctions exports of those official lists. The EU "token" is a static public path component, not a credential.
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
 
@@ -345,13 +379,14 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 
 | Directory | Purpose |
 |:---|:---|
-| `src/index.ts` | `createApp()` entry point — registers tools/resources/prompts, inits the screening service, schedules the HTTP refresh. |
+| `src/index.ts` | `createApp()` entry point — registers tools/resources/prompts, inits the screening service, schedules the HTTP refresh, starts the AML REST sidecar. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
+| `src/http/aml-api.ts` | REST sidecar — `POST /api/aml/screen-person`. |
 | `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — the six screening/resolution tools. |
 | `src/mcp-server/resources` | Resource definitions (`*.resource.ts`) — the three URI mirrors. |
 | `src/mcp-server/prompts` | Prompt definitions (`*.prompt.ts`) — the counterparty vetting prompt. |
-| `src/services/screening` | The screening service — local mirror, normalized schema, source ingesters (OFAC/EU/UK/UN/GLEIF), and the strict/fuzzy matching engine. |
-| `scripts/mirror-*.ts` | Mirror lifecycle CLI — init, refresh, verify, seed. |
+| `src/services/screening` | The screening service — local mirror, normalized schema, source ingesters (OFAC/EU/UK/UN/India/UAE/GLEIF), and the strict/fuzzy matching engine. |
+| `scripts/mirror-*.ts` | Mirror lifecycle CLI — init, refresh, verify, seed, plus `mirror-load-india-uae`. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 
 ## Development guide
@@ -371,6 +406,9 @@ This server redistributes open data from the following sources, cited here per t
 - **EU** Consolidated Financial Sanctions List — European Commission / EEAS (freely redistributable).
 - **UK Sanctions List** — UK Foreign, Commonwealth & Development Office, licensed under the [Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/) (attribution required).
 - **UN** Security Council Consolidated List — United Nations Security Council (freely redistributable).
+- **India UAPA** — Ministry of Home Affairs, Government of India (harvested via [OpenSanctions](https://www.opensanctions.org/datasets/in_mha_banned/); confirm commercial use of that export).
+- **India FEO / NIA Most Wanted** — curated compilation from public Government of India / parliamentary reporting (not a live ED or NIA bulk feed).
+- **UAE Local Terrorist List** — Executive Office for Control & Non-Proliferation (harvested via [OpenSanctions](https://www.opensanctions.org/datasets/ae_local_terrorists/); confirm commercial use of that export).
 - **GLEIF** LEI data — Global Legal Entity Identifier Foundation, [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/).
 
 ## Contributing

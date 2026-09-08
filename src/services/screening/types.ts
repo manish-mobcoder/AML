@@ -1,0 +1,241 @@
+/**
+ * @fileoverview Common normalized schema for sanctions designations and GLEIF
+ * legal-entity records, plus the matching-engine vocabulary. Every upstream
+ * source (OFAC, EU, UK, UN, India UAPA, India FEO/NIA, UAE Local, GLEIF) collapses onto these
+ * shapes so the matching engine and tools never see a source-specific structure.
+ * @module services/screening/types
+ */
+
+/** Source list codes — the value stored in `designation.source`. */
+export type SourceCode =
+  | 'ofac_sdn'
+  | 'ofac_consolidated'
+  | 'eu'
+  | 'uk'
+  | 'un'
+  | 'india_uapa'
+  | 'india_watchlist'
+  | 'uae_local';
+
+/** All sanctions source codes, in display order. */
+export const SOURCE_CODES: readonly SourceCode[] = [
+  'ofac_sdn',
+  'ofac_consolidated',
+  'eu',
+  'uk',
+  'un',
+  'india_uapa',
+  'india_watchlist',
+  'uae_local',
+] as const;
+
+/**
+ * Zod-friendly non-empty tuple of source codes — keep in sync with
+ * {@link SOURCE_CODES}. Used by tool/resource input enums.
+ */
+export const SOURCE_CODE_ENUM = [
+  'ofac_sdn',
+  'ofac_consolidated',
+  'eu',
+  'uk',
+  'un',
+  'india_uapa',
+  'india_watchlist',
+  'uae_local',
+] as const satisfies readonly SourceCode[];
+
+/** Human-facing label per source, used in provenance and `sanctions_list_sources`. */
+export const SOURCE_LABELS: Record<SourceCode, string> = {
+  ofac_sdn: 'OFAC Specially Designated Nationals (SDN) List',
+  ofac_consolidated: 'OFAC Consolidated Sanctions List',
+  eu: 'EU Consolidated Financial Sanctions List',
+  uk: 'UK Sanctions List (FCDO)',
+  un: 'UN Security Council Consolidated List',
+  india_uapa: 'India UAPA Banned Organisations / Individuals (MHA)',
+  india_watchlist: 'India FEO / NIA Most Wanted (curated)',
+  uae_local: 'UAE Local Terrorist List (EOCN)',
+};
+
+/** Coarse entity classification shared across all sources. */
+export type EntityType = 'person' | 'organization' | 'vessel' | 'aircraft' | 'unknown';
+
+/** Name-record provenance within a designation. */
+export type NameType = 'primary' | 'aka' | 'fka' | 'low-quality-aka';
+
+/** One name or alias attached to a designation. */
+export interface NameRecord {
+  /** The name as published. */
+  name: string;
+  /** Provenance of this name. */
+  nameType: NameType;
+}
+
+/** A structured identifier (passport, national ID, tax ID, registration number, …). */
+export interface IdentifierRecord {
+  /** Issuing country/authority, when published. */
+  country?: string;
+  /** Identifier category as published (e.g. "Passport", "National ID"). */
+  type: string;
+  /** The identifier value. */
+  value: string;
+}
+
+/** A published address (free-form components — sources vary widely). */
+export interface AddressRecord {
+  /** ISO country or country name, when published. */
+  country?: string;
+  /** Single-line rendering of the address, joined from whatever components were published. */
+  full: string;
+}
+
+/** Date + place of birth (persons only). */
+export interface DobRecord {
+  /** Date string as published (ISO 8601 where the source provides a clean date). */
+  date?: string;
+  /** Place of birth, when published. */
+  place?: string;
+}
+
+/**
+ * The full normalized record for one designation, stored as JSON in
+ * `designation.payload` and surfaced by `sanctions_get_designation`.
+ */
+export interface DesignationPayload {
+  addresses: AddressRecord[];
+  aliases: NameRecord[];
+  datesOfBirth: DobRecord[];
+  identifiers: IdentifierRecord[];
+  nationalities: string[];
+  /** Free-form remarks/title published by the source, when present. */
+  remarks?: string;
+}
+
+/**
+ * One normalized designation — the unit an ingester yields and the row stored
+ * in the primary `designation` table (with `payload` JSON-stringified).
+ */
+export interface NormalizedDesignation {
+  /** Designation date, ISO 8601 where available. */
+  designationDate?: string;
+  entityType: EntityType;
+  /** `{source}:{sourceEntryId}` composite primary key. */
+  id: string;
+  /** Statutory / regulatory basis, when published. */
+  legalBasis?: string;
+  /** Full normalized detail. */
+  payload: DesignationPayload;
+  /** Primary name as published. */
+  primaryName: string;
+  /** Sanctioning program / regime, when published. */
+  program?: string;
+  source: SourceCode;
+  /** The list's own entry ID (for `get_designation`). */
+  sourceEntryId: string;
+}
+
+/** A GLEIF Level 1 entity record (who-is-who). */
+export interface NormalizedLeiEntity {
+  /** Single-line headquarters address. */
+  headquartersAddress?: string;
+  /** ISO 3166-1 alpha-2 jurisdiction, when published. */
+  jurisdiction?: string;
+  /** ISO 8601 last-update timestamp from the LEI record. */
+  lastUpdate?: string;
+  /** Single-line legal address. */
+  legalAddress?: string;
+  legalName: string;
+  lei: string;
+  /** Trading / other names published in the LEI record. */
+  otherNames: string[];
+  /** The entity's ID at its registration authority. */
+  registrationAuthorityEntityId?: string;
+  /** Registration authority identifier (RA code). */
+  registrationAuthorityId?: string;
+  /** Registration status (e.g. ISSUED, LAPSED). */
+  status?: string;
+}
+
+/** A GLEIF Level 2 relationship record (who-owns-whom). */
+export interface NormalizedLeiRelationship {
+  childLei: string;
+  parentLei: string;
+  /** Relationship period summary, when published. */
+  relationshipPeriod?: string;
+  /** Accounting/relationship status (e.g. ACTIVE, INACTIVE). */
+  relationshipStatus?: string;
+  /** e.g. IS_DIRECTLY_CONSOLIDATED_BY, IS_ULTIMATELY_CONSOLIDATED_BY. */
+  relationshipType: string;
+}
+
+/** Match classification, in descending confidence. */
+export type MatchType = 'exact' | 'strong' | 'approximate';
+
+/**
+ * How much of a multi-token query a candidate actually explains: a literal count
+ * of query tokens that individually clear the applied score floor against one of
+ * the candidate's tokens, alongside the query's total token count.
+ *
+ * This is a second real measurement, never a blend — `score` stays the raw
+ * Jaro-Winkler value. It exists because `score` is the max over a whole-string
+ * and a single best token-pair comparison, so any two candidates sharing one
+ * exact query token both report 1.0 no matter how much of the rest of the query
+ * they explain. Coverage separates those ties and is surfaced so a caller can
+ * account for the resulting order.
+ */
+export interface QueryTokenCoverage {
+  /** Query tokens individually matched by some candidate token, at the applied floor. */
+  covered: number;
+  /** Total tokens in the folded query. */
+  total: number;
+}
+
+/** The two screening match modes. */
+export type MatchMode = 'strict' | 'fuzzy';
+
+/** A scored screening hit returned by the matching engine. */
+export interface ScreeningHit {
+  designationDate?: string;
+  /** `{source}:{sourceEntryId}` of the matched designation. */
+  designationId: string;
+  entityType: EntityType;
+  /** The specific name/alias string that matched the query. */
+  matchedName: string;
+  /** Provenance of the matched name (primary / aka / fka / low-quality-aka). */
+  matchedNameType: NameType;
+  matchType: MatchType;
+  /** Primary published name of the matched designation. */
+  primaryName: string;
+  program?: string;
+  /**
+   * Query-token coverage for `approximate` hits — the ranking key applied after
+   * {@link ScreeningHit.score}. Omitted for exact/strong hits, which are ranked
+   * by match type.
+   */
+  queryTokenCoverage?: QueryTokenCoverage;
+  /**
+   * Raw Jaro-Winkler similarity (0–1) for `approximate` hits — a real
+   * measurement, never a fabricated composite. Omitted for exact/strong hits,
+   * which are deterministic and not scored.
+   */
+  score?: number;
+  source: SourceCode;
+  sourceEntryId: string;
+}
+
+/** A scored LEI resolution candidate. */
+export interface LeiMatch {
+  jurisdiction?: string;
+  legalName: string;
+  lei: string;
+  /** The name (legal or other) that matched the query. */
+  matchedName: string;
+  matchType: MatchType;
+  /**
+   * Query-token coverage of {@link LeiMatch.matchedName} for `approximate`
+   * matches — the ranking key applied after {@link LeiMatch.score}.
+   */
+  queryTokenCoverage?: QueryTokenCoverage;
+  /** Raw Jaro-Winkler similarity for `approximate` hits only. */
+  score?: number;
+  status?: string;
+}

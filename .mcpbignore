@@ -1,0 +1,18 @@
+# Runtime mirror state — local SQLite + FTS5 databases (populated via mirror:init).
+# Never ship in the bundle; end-users build their own mirror.
+/data/
+*.db
+*.db-shm
+*.db-wal
+.env*
+.mcpregistry_*
+/.claude/
+/.agents/
+/skills/
+/Dockerfile
+/bun.lock
+/bunfig.toml
+/wrangler.toml
+/biome.json
+/tsconfig*.json
+/vitest.config.ts

@@ -1,0 +1,51 @@
+# Changelog
+
+All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
+
+## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-08-25
+
+Adopt @cyanheads/mcp-ts-core 0.12: tool inputs are strict at the root, so an undeclared argument key is rejected by name instead of silently ignored — and the docs that named parameters in snake_case now match the camelCase the schemas declare
+
+## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-08-16
+
+Stream every sanctions source instead of buffering the whole document — the mirror:init sanctions leg now peaks at 480 MiB where it previously OOM-killed the run — and drop records with no source identifier or no usable name rather than minting a fresh UUID each harvest
+
+## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-08-16
+
+Rank fuzzy candidates that one shared exact token ties on query-token coverage, and disclose what the ownership graph and the cross-reference screens could not do — depth truncation, unhydrated nodes, unavailable screening, and capped hit lists
+
+## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-08-16
+
+Make capped screening results page-retrievable with an honest exact-vs-lower_bound count, gate the designation and entity URI resources on mirror readiness, and restore per-source url/license on sanctions://sources
+
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-07-04
+
+Fix a whole-string Jaro-Winkler prefix-inflation false positive in fuzzy screening admission with a folded-length-ratio guard shared by the sanctions and LEI fuzzy paths
+
+## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-07-04 · 🛡️ Security
+
+Fix a fuzzy-match single-token false positive and namespace-prefixed GLEIF XML parsing, advance GLEIF delta freshness reporting, stream the golden-copy ingest, and clear a moderate js-yaml DoS advisory via the mcp-ts-core ^0.10.10 bump
+
+## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-06-20
+
+Adopt @cyanheads/mcp-ts-core ^0.10.9 — re-synced scripts/ guards add a dependency-specifier check that rejects floating specifiers (latest/*/dist-tags) in package.json + bun.lock, and the packaging lint now validates the Codex/Claude plugin marketplace manifests
+
+## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-06-19
+
+Adopt @cyanheads/mcp-ts-core ^0.10.8 — ctx.content media collector, canvas invalid_sql classification, DuckdbProvider.describe() filter fix, fresh-scaffold devcheck guards; @types/node 26 + dependency refresh
+
+## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-06-19
+
+Fixes: uniform minScore floor in fuzzy screening, mirror-script logger output, screenNodes doc correction
+
+## [0.1.2](changelog/0.1.x/0.1.2.md) — 2026-06-15
+
+Public hosted endpoint at https://sanctions-screening.caseyjhand.com/mcp
+
+## [0.1.1](changelog/0.1.x/0.1.1.md) — 2026-06-14
+
+Scope the README title to the published npm name, @cyanheads/sanctions-screening-mcp-server.
+
+## [0.1.0](changelog/0.1.x/0.1.0.md) — 2026-06-13
+
+Initial release: screen names against OFAC, EU, UK, and UN sanctions lists and resolve legal entities against GLEIF, fuzzy-matched offline over a local SQLite + FTS5 mirror. A screening aid, not a compliance determination.

@@ -368,12 +368,41 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Docker
 
+Preferred path is Compose (MCP **3010**, AML **3011**, persistent mirror volume). A failed **build** exits immediately and does not start containers. Runtime crashes restart (`unless-stopped`). Populate the mirror **once** after first start.
+
 ```sh
-docker build -t sanctions-screening-mcp-server .
-docker run --rm -p 3010:3010 -v sanctions-data:/usr/src/app/data sanctions-screening-mcp-server
+docker compose build
+docker compose up -d sanctions
+docker compose ps
+curl -s http://127.0.0.1:3010/healthz
+
+# First time only — several minutes; OFAC SDN is quiet until it finishes
+docker compose --profile init run --rm mirror-init
+
+curl -s -X POST http://127.0.0.1:3011/api/aml/screen-person \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Vijay Mallya"}'
 ```
 
-The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/sanctions-screening-mcp-server`. The image runs under Bun, so the mirror uses `bun:sqlite` (no native build). Mount a volume at the mirror path (`/usr/src/app/data` by default) so the populated mirror survives container restarts, and run `bun run mirror:init` inside the container (`docker exec`) to populate it. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
+If OFAC/EU/UK/UN are already in the volume and you only need India/UAE/FEO:
+
+```sh
+docker compose exec sanctions bun run scripts/mirror-load-india-uae.ts
+```
+
+On a server, keep **3011** off the public internet (security group / private VPC). Bind is `0.0.0.0` inside the container so other hosts on the mapped ports can reach AML.
+
+Raw `docker run` (MCP only unless you also publish 3011 and set `AML_API_HOST=0.0.0.0`):
+
+```sh
+docker build -t sanctions-screening-mcp-server .
+docker run --rm -p 3010:3010 -p 3011:3011 \
+  -e AML_API_HOST=0.0.0.0 \
+  -v sanctions-data:/usr/src/app/data \
+  sanctions-screening-mcp-server
+```
+
+The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/sanctions-screening-mcp-server`. The image runs under Bun, so the mirror uses `bun:sqlite` (no native build). OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
 
 ## Project structure
 
@@ -387,6 +416,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | `src/mcp-server/prompts` | Prompt definitions (`*.prompt.ts`) — the counterparty vetting prompt. |
 | `src/services/screening` | The screening service — local mirror, normalized schema, source ingesters (OFAC/EU/UK/UN/India/UAE/GLEIF), and the strict/fuzzy matching engine. |
 | `scripts/mirror-*.ts` | Mirror lifecycle CLI — init, refresh, verify, seed, plus `mirror-load-india-uae`. |
+| `docker-compose.yml` | MCP + AML stack with a persistent data volume and a one-shot `mirror-init` profile. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 
 ## Development guide

@@ -132,8 +132,9 @@ ENV MCP_LOG_LEVEL="info"
 ENV LOGS_DIR="/var/log/sanctions-screening-mcp-server"
 ENV MCP_FORCE_CONSOLE_LOGGING="true"
 
-# Expose the port the server listens on
+# MCP HTTP + /healthz. AML REST sidecar is 3011 (set AML_API_PORT to override).
 EXPOSE ${MCP_HTTP_PORT}
+EXPOSE 3011
 
 # Health check using a bun-native fetch (slim image ships no curl/wget)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD bun -e "fetch('http://localhost:'+(process.env.MCP_HTTP_PORT??'3010')+'/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

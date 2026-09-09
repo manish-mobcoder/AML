@@ -1,0 +1,69 @@
+# Production-style stack for MCP (3010) + AML REST (3011).
+# A failed `docker compose build` stops here — Compose will not start containers
+# from a broken image. Runtime crashes restart via unless-stopped.
+#
+# Local test:
+#   docker compose build
+#   docker compose up -d sanctions
+#   docker compose --profile init run --rm mirror-init
+#   curl -s http://127.0.0.1:3010/healthz
+#   curl -s -X POST http://127.0.0.1:3011/api/aml/screen-person \
+#     -H 'Content-Type: application/json' -d '{"name":"Vijay Mallya"}'
+
+services:
+  sanctions:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sanctions-screening-mcp-server:latest
+    restart: unless-stopped
+    ports:
+      - "3010:3010" # MCP + /healthz
+      - "3011:3011" # AML REST  POST /api/aml/screen-person
+    volumes:
+      - sanctions-data:/usr/src/app/data
+    environment:
+      NODE_ENV: production
+      MCP_TRANSPORT_TYPE: http
+      MCP_HTTP_HOST: "0.0.0.0"
+      MCP_HTTP_PORT: "3010"
+      MCP_SESSION_MODE: stateless
+      MCP_LOG_LEVEL: info
+      MCP_AUTH_MODE: none
+      SANCTIONS_MIRROR_PATH: /usr/src/app/data/sanctions.db
+      SANCTIONS_REFRESH_CRON: "0 4 * * *"
+      SANCTIONS_INIT_SKIP_GLEIF: "1"
+      AML_API_HOST: "0.0.0.0"
+      AML_API_PORT: "3011"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://127.0.0.1:3010/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # One-shot: populate lists. Run once (or after wiping the volume).
+  # OFAC SDN can take several minutes with little log output.
+  # A failed init does not stop `sanctions`; screens fail until the mirror is ready.
+  mirror-init:
+    image: sanctions-screening-mcp-server:latest
+    depends_on:
+      sanctions:
+        condition: service_started
+    volumes:
+      - sanctions-data:/usr/src/app/data
+    environment:
+      SANCTIONS_MIRROR_PATH: /usr/src/app/data/sanctions.db
+      SANCTIONS_INIT_SKIP_GLEIF: "1"
+    entrypoint: ["bun", "run", "scripts/mirror-init.ts"]
+    restart: "no"
+    profiles: ["init"]
+
+volumes:
+  sanctions-data:

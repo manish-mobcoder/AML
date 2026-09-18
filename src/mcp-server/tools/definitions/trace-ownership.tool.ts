@@ -121,6 +121,7 @@ export const traceOwnershipTool = tool('sanctions_trace_ownership', {
   description:
     'Trace the GLEIF Level 2 corporate-ownership graph for an LEI: direct and ultimate parents and/or children, traversed breadth-first to a bounded depth, with relationship type for each edge. Set screenNodes to also screen every entity in the graph against all loaded watchlists — beneficial-ownership screening that resolves "is anyone in this ownership chain sanctioned." Each per-node screen is a screening AID: hits are candidates to verify, and an empty result for a node is not a clearance of that node. The response says what it could not do: complete/truncated/missingEntityLeis report whether the graph is the full known picture, screeningStatus reports whether the cross-reference actually ran, and each screened node reports whether its own hit list was capped. Requires a valid 20-character LEI (use sanctions_resolve_entity to obtain one).',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  auth: ['tool:sanctions:read'],
   input: z.object({
     lei: z
       .string()

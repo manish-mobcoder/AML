@@ -16,6 +16,7 @@ export const resolveEntityTool = tool('sanctions_resolve_entity', {
   description:
     'Resolve a company or organization name (with an optional ISO 3166-1 alpha-2 jurisdiction) to candidate GLEIF Legal Entity Identifiers (LEIs), ranked. This turns a free-text counterparty name into a stable global identifier that sanctions_get_entity and sanctions_trace_ownership key off. Strict mode (default) matches exact-normalized then all-tokens-present; fuzzy mode (or auto when strict is empty) adds Jaro-Winkler scoring labeled approximate with a raw 0–1 score plus the count of query tokens the matched name covers, which orders candidates that tie on score. Results are paged: totalAvailable and hasMore report candidates beyond the returned page, and nextOffset retrieves them. Returns potential matches to confirm against the GLEIF record — name resolution is a candidate ranking, not an authoritative identification.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  auth: ['tool:sanctions:read'],
   input: z.object({
     name: z.string().min(1).describe('The company / organization name to resolve to an LEI.'),
     jurisdiction: z

@@ -1,44 +1,16 @@
 {
   "name": "sanctions-screening-service",
   "version": "1.0.1",
-  "mcpName": "io.github.cyanheads/sanctions-screening-mcp-server",
-  "description": "Screen names against the consolidated OFAC, EU, UK, and UN sanctions lists and resolve legal entities against GLEIF, fuzzy-matched offline over a local SQLite + FTS5 mirror. A screening aid, not a compliance determination.",
+  "description": "AML/sanctions screening REST API — screens names against OFAC, EU, UK, UN, India, and UAE watchlists.",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "bin": {
-    "sanctions-screening-mcp-server": "dist/index.js"
-  },
-  "files": [
-    "dist/",
-    "scripts/_mirror-context.ts",
-    "scripts/mirror-init.ts",
-    "scripts/mirror-refresh.ts",
-    "scripts/mirror-verify.ts",
-    "scripts/mirror-seed.ts",
-    "scripts/mirror-load-india-uae.ts",
-    "README.md",
-    "LICENSE",
-    "CLAUDE.md",
-    "AGENTS.md",
-    "Dockerfile",
-    "server.json"
-  ],
   "scripts": {
     "build": "bun run scripts/build.ts",
     "rebuild": "bun run scripts/clean.ts && bun run scripts/build.ts",
     "clean": "bun run scripts/clean.ts",
-    "devcheck": "bun run scripts/devcheck.ts",
     "audit:refresh": "rm -f bun.lock && bun install && bun audit",
-    "tree": "bun run scripts/tree.ts",
-    "list-skills": "bun run scripts/list-skills.ts",
     "format": "biome check --write .",
     "format:unsafe": "biome check --write --unsafe .",
-    "lint:mcp": "bun run scripts/lint-mcp.ts",
-    "lint:packaging": "bun run scripts/lint-packaging.ts",
-    "bundle": "bun run build && npx -y @anthropic-ai/mcpb pack . dist/sanctions-screening-mcp-server.mcpb && bun run scripts/clean-mcpb.ts dist/sanctions-screening-mcp-server.mcpb",
-    "release:github": "bun run scripts/release-github.ts",
-    "publish-mcp": "mcp-publisher login github -token \"$(security find-generic-password -a \"$USER\" -s mcp-publisher-github-pat -w)\" && mcp-publisher publish",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "start": "node dist/index.js",
@@ -50,55 +22,11 @@
     "mirror:seed": "bun run scripts/mirror-seed.ts",
     "mirror:load-india-uae": "bun run scripts/mirror-load-india-uae.ts"
   },
-  "keywords": [
-    "sanctions",
-    "sanctions-screening",
-    "ofac",
-    "ofac-sdn",
-    "aml",
-    "kyc",
-    "compliance",
-    "watchlist",
-    "gleif",
-    "lei",
-    "beneficial-ownership",
-    "due-diligence",
-    "mcp",
-    "mcp-server",
-    "model-context-protocol",
-    "typescript",
-    "bun",
-    "stdio",
-    "streamable-http",
-    "ai-agent"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/cyanheads/sanctions-screening-mcp-server.git"
-  },
-  "bugs": {
-    "url": "https://github.com/cyanheads/sanctions-screening-mcp-server/issues"
-  },
-  "homepage": "https://github.com/cyanheads/sanctions-screening-mcp-server#readme",
-  "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
-  "funding": [
-    {
-      "type": "github",
-      "url": "https://github.com/sponsors/cyanheads"
-    },
-    {
-      "type": "buy_me_a_coffee",
-      "url": "https://www.buymeacoffee.com/cyanheads"
-    }
-  ],
   "license": "Apache-2.0",
   "packageManager": "bun@1.4.0",
   "engines": {
     "bun": ">=1.3.0",
     "node": ">=24.0.0"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "dependencies": {
     "@cyanheads/mcp-ts-core": "^0.12.3",

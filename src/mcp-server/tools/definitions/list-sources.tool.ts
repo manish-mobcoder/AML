@@ -23,6 +23,7 @@ export const listSourcesTool = tool('sanctions_list_sources', {
   description:
     "List the sanctions watchlists (OFAC SDN + Consolidated, EU, UK, UN, India UAPA, India FEO/NIA, UAE Local) and GLEIF datasets currently loaded in the local mirror, each with its record count, source URL, license, and the mirror's readiness and as-of timestamp. Use this for provenance and freshness on any result — results are only as current as the last mirror refresh, and a not-ready mirror means screening cannot run yet. Attribution: UK data is under the Open Government Licence v3.0; all sources are cited here.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  auth: ['tool:sanctions:read'],
   input: z.object({}),
   output: z.object({
     sanctionsReady: z

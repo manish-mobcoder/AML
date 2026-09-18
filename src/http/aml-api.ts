@@ -4,6 +4,7 @@ import { SOURCE_LABELS, type SourceCode } from '@/services/screening/types.js';
 
 const PORT = Number(process.env.AML_API_PORT ?? 3011);
 const HOST = process.env.AML_API_HOST ?? '127.0.0.1';
+const API_KEY = process.env.AML_API_KEY;
 
 const SOURCE_CODES: SourceCode[] = [
   'ofac_sdn',
@@ -17,9 +18,9 @@ const SOURCE_CODES: SourceCode[] = [
 ];
 
 interface ScreenPersonRequest {
-  name: string;
-  dateOfBirth?: string;
   countryOfBirth?: string;
+  dateOfBirth?: string;
+  name: string;
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -29,21 +30,37 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body, null, 2));
 }
 
-async function readBody(req: IncomingMessage): Promise<string> {
+async function readBody(req: IncomingMessage): Promise<Buffer> {
   return await new Promise((resolve, reject) => {
-    let body = '';
+    const chunks: Buffer[] = [];
+    let size = 0;
 
-    req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 1024 * 1024) {
+    req.on('data', (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buf.length;
+      if (size > 1024 * 1024) {
         reject(new Error('Request body too large'));
         req.destroy();
+        return;
       }
+      chunks.push(buf);
     });
 
-    req.on('end', () => resolve(body));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function apiKeyValid(req: IncomingMessage, key: string): boolean {
+  const fromXApiKey = headerValue(req.headers['x-api-key']) ?? '';
+  const authHeader = headerValue(req.headers['authorization']) ?? '';
+  const fromBearer = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const provided = fromXApiKey || fromBearer;
+  return provided === key;
 }
 
 function normalize(value: string): string {
@@ -69,9 +86,7 @@ function countryMatches(
   }
 
   return addresses.some(
-    (address) =>
-      address.country !== undefined &&
-      normalize(address.country).includes(wanted),
+    (address) => address.country !== undefined && normalize(address.country).includes(wanted),
   );
 }
 
@@ -118,29 +133,19 @@ async function screenPerson(input: ScreenPersonRequest) {
   const matches = [];
 
   for (const hit of result.hits) {
-    const designation = await svc.getDesignation(
-      hit.source,
-      hit.sourceEntryId,
-    );
+    const designation = await svc.getDesignation(hit.source, hit.sourceEntryId);
 
     if (!designation) continue;
 
     const datesOfBirth = designation.payload.datesOfBirth ?? [];
 
     const dateOfBirthMatch =
-      !!input.dateOfBirth &&
-      datesOfBirth.some(
-        (dob) => dob.date === input.dateOfBirth,
-      );
+      !!input.dateOfBirth && datesOfBirth.some((dob) => dob.date === input.dateOfBirth);
 
     const countryOfBirthMatch =
       !!input.countryOfBirth &&
       datesOfBirth.some((dob) =>
-        countryMatches(
-          input.countryOfBirth,
-          dob.place,
-          designation.payload.addresses ?? [],
-        ),
+        countryMatches(input.countryOfBirth, dob.place, designation.payload.addresses ?? []),
       );
 
     matches.push({
@@ -161,9 +166,7 @@ async function screenPerson(input: ScreenPersonRequest) {
   }
 
   const matchScore =
-    matches.length === 0
-      ? 0
-      : Math.max(...matches.map((match) => match.matchScore));
+    matches.length === 0 ? 0 : Math.max(...matches.map((match) => match.matchScore));
 
   return {
     status: matches.length > 0 ? 'potential_match' : 'no_match',
@@ -173,18 +176,29 @@ async function screenPerson(input: ScreenPersonRequest) {
 }
 
 export function startAmlApi(): void {
+  if (!API_KEY) {
+    console.warn(
+      'AML_API_KEY is not set; POST /api/aml/screen-person is unauthenticated (backward-compatible mode)',
+    );
+  }
+
   const server = createServer(async (req, res) => {
     try {
-      if (
-        req.method === 'POST' &&
-        req.url === '/api/aml/screen-person'
-      ) {
+      if (req.method === 'POST' && req.url === '/api/aml/screen-person') {
         const body = await readBody(req);
+
+        if (API_KEY) {
+          if (!apiKeyValid(req, API_KEY)) {
+            return json(res, 401, {
+              error: 'Unauthorized',
+            });
+          }
+        }
 
         let input: ScreenPersonRequest;
 
         try {
-          input = JSON.parse(body);
+          input = JSON.parse(body.toString('utf8'));
         } catch {
           return json(res, 400, {
             error: 'Invalid JSON request body',
@@ -209,17 +223,12 @@ export function startAmlApi(): void {
       console.error('AML API error:', error);
 
       return json(res, 500, {
-        error:
-          error instanceof Error
-            ? error.message
-            : 'Internal server error',
+        error: error instanceof Error ? error.message : 'Internal server error',
       });
     }
   });
 
   server.listen(PORT, HOST, () => {
-    console.log(
-      `AML API listening at http://${HOST}:${PORT}`,
-    );
+    console.log(`AML API listening at http://${HOST}:${PORT}`);
   });
 }

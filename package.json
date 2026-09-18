@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/sanctions-screening-mcp-server",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "mcpName": "io.github.cyanheads/sanctions-screening-mcp-server",
   "description": "Screen names against the consolidated OFAC, EU, UK, and UN sanctions lists and resolve legal entities against GLEIF, fuzzy-matched offline over a local SQLite + FTS5 mirror. A screening aid, not a compliance determination.",
   "type": "module",
@@ -10,7 +10,6 @@
     "sanctions-screening-mcp-server": "dist/index.js"
   },
   "files": [
-    "changelog/",
     "dist/",
     "scripts/_mirror-context.ts",
     "scripts/mirror-init.ts",
@@ -38,8 +37,6 @@
     "lint:mcp": "bun run scripts/lint-mcp.ts",
     "lint:packaging": "bun run scripts/lint-packaging.ts",
     "bundle": "bun run build && npx -y @anthropic-ai/mcpb pack . dist/sanctions-screening-mcp-server.mcpb && bun run scripts/clean-mcpb.ts dist/sanctions-screening-mcp-server.mcpb",
-    "changelog:build": "bun run scripts/build-changelog.ts",
-    "changelog:check": "bun run scripts/build-changelog.ts --check",
     "release:github": "bun run scripts/release-github.ts",
     "publish-mcp": "mcp-publisher login github -token \"$(security find-generic-password -a \"$USER\" -s mcp-publisher-github-pat -w)\" && mcp-publisher publish",
     "test": "vitest run",

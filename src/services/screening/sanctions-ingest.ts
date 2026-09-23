@@ -33,13 +33,11 @@
  */
 
 import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
-import { fetchWithTimeout, requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { logger, fetchWithTimeout, requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
-import {
-  buildIndiaUapaIngester,
-  buildUaeLocalIngester,
-} from '@/services/screening/india-uae-ingest.js';
+import { buildIndiaMhaIngester } from '@/services/screening/india-mha-ingest.js';
 import { buildIndiaWatchlistIngester } from '@/services/screening/india-watchlist-ingest.js';
+import { buildUaeLocalIngester } from '@/services/screening/uae-local-ingest.js';
 import {
   createRejections,
   type IngestRejections,
@@ -1150,7 +1148,7 @@ export function buildSanctionsIngesters(): SanctionsIngester[] {
     buildEuIngester(),
     buildUkIngester(),
     buildUnIngester(),
-    buildIndiaUapaIngester(),
+    buildIndiaMhaIngester(),
     buildIndiaWatchlistIngester(),
     buildUaeLocalIngester(),
   ];
@@ -1195,21 +1193,36 @@ export function createSanctionsSync(options: SanctionsSyncOptions) {
     for (const ingester of ingesters) {
       if (ctx.signal.aborted) return;
       let page: Record<string, string | number | null>[] = [];
-      for await (const designation of ingester.harvest(ctx.signal)) {
-        page.push(toDesignationRow(designation));
-        if (page.length >= pageSize) {
-          yield { records: page, checkpoint: stamp };
-          page = [];
+      try {
+        for await (const designation of ingester.harvest(ctx.signal)) {
+          page.push(toDesignationRow(designation));
+          if (page.length >= pageSize) {
+            yield { records: page, checkpoint: stamp };
+            page = [];
+          }
         }
-      }
-      // The trailing partial page must be yielded before the deferred columns
-      // are applied — the runner persists a page before resuming this generator,
-      // so this is what puts the source's last rows in reach of the UPDATE.
-      if (page.length > 0) yield { records: page, checkpoint: stamp };
+        // The trailing partial page must be yielded before the deferred columns
+        // are applied — the runner persists a page before resuming this generator,
+        // so this is what puts the source's last rows in reach of the UPDATE.
+        if (page.length > 0) yield { records: page, checkpoint: stamp };
 
-      const deferred = ingester.deferredFields();
-      if (deferred.size > 0) await options.applyDeferredFields(ingester.source, deferred);
-      options.onSourceReport?.(ingester.report());
+        const deferred = ingester.deferredFields();
+        if (deferred.size > 0) await options.applyDeferredFields(ingester.source, deferred);
+        options.onSourceReport?.(ingester.report());
+      } catch (err) {
+        // A single source failing (network outage, page-structure change) must
+        // not abort the rest of the sync — the other lists still protect. The
+        // error is logged; onSourceReport is NOT called so callers can detect
+        // the gap. The AbortSignal is NOT caught here; a cancelled sync rethrows.
+        if (ctx.signal.aborted) throw err;
+        logger.info(
+          `Sanctions harvest: source ${ingester.source} failed — skipping`,
+          requestContextService.createRequestContext({
+            operation: 'mirror.sync.source.error',
+            additionalContext: { source: ingester.source, error: String(err) },
+          }),
+        );
+      }
     }
   };
 }

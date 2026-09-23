@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { getScreeningService } from '@/services/screening/screening-service.js';
+import type { AttributeCheck } from '@/services/screening/types.js';
 import { SOURCE_LABELS, type SourceCode } from '@/services/screening/types.js';
 
 const PORT = Number(process.env.AML_API_PORT ?? 3011);
@@ -18,15 +19,38 @@ const SOURCE_CODES: SourceCode[] = [
 ];
 
 interface ScreenPersonRequest {
-  countryOfBirth?: string;
-  dateOfBirth?: string;
   name: string;
+  /** ISO 8601 date of birth (YYYY-MM-DD), year-month (YYYY-MM), or year only (YYYY). */
+  dateOfBirth?: string;
+  /** Country name, demonym ("Jordanian"), or ISO-2 code ("JO"). */
+  nationality?: string;
+  /**
+   * Passport number shorthand — equivalent to passing
+   * `identifiers: [{ type: "Passport", value: "..." }]`.
+   * An exact match against the designation record scores 100 immediately.
+   */
+  passportNumber?: string;
+  /**
+   * National ID number shorthand — equivalent to passing
+   * `identifiers: [{ type: "National ID", value: "..." }]`.
+   */
+  nationalId?: string;
+  /**
+   * Additional document numbers when you have more than one identifier
+   * or a non-standard document type.
+   */
+  identifiers?: Array<{ type?: string; value: string }>;
+  /**
+   * Opaque customer identifier. When provided, hits previously cleared by an
+   * analyst via `sanctions_clear_hit` are suppressed from results.
+   */
+  customerRef?: string;
+  /** 'strict' (default) or 'fuzzy'. Strict auto-falls back to fuzzy when empty. */
+  matchMode?: 'strict' | 'fuzzy';
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-  });
+  res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body, null, 2));
 }
 
@@ -34,7 +58,6 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
   return await new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-
     req.on('data', (chunk: Buffer | string) => {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += buf.length;
@@ -45,7 +68,6 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
       }
       chunks.push(buf);
     });
-
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
@@ -55,59 +77,40 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+/**
+ * Compute a backward-compatible match score (0–100) from attributeCheck signals.
+ * Keeps the same scale the calling app already uses for decision thresholds while
+ * using the improved per-attribute checks instead of the old manual comparison.
+ *
+ * Scale:
+ *   identifier match                    → 100 (near-decisive — passport/ID exact match)
+ *   name (exact/strong) + DOB + country → 100
+ *   name (exact/strong) + DOB           →  80
+ *   name (exact/strong) + country       →  60
+ *   name match only                     →  40
+ *   approximate name only               →  20
+ *   no attributes supplied              →  40 / 20 based on match type (same as name-only)
+ */
+function computeMatchScore(
+  matchType: string,
+  attributeCheck: AttributeCheck | undefined,
+): number {
+  if (attributeCheck?.identifier === 'match') return 100;
+  const nameStrong = matchType === 'exact' || matchType === 'strong';
+  const dobMatch = attributeCheck?.dob === 'match';
+  const nationalityMatch = attributeCheck?.nationality === 'match';
+  if (nameStrong && dobMatch && nationalityMatch) return 100;
+  if (nameStrong && dobMatch) return 80;
+  if (nameStrong && nationalityMatch) return 60;
+  if (nameStrong) return 40;
+  return 20; // approximate
+}
+
 function apiKeyValid(req: IncomingMessage, key: string): boolean {
   const fromXApiKey = headerValue(req.headers['x-api-key']) ?? '';
   const authHeader = headerValue(req.headers['authorization']) ?? '';
   const fromBearer = authHeader.replace(/^Bearer\s+/i, '').trim();
-  const provided = fromXApiKey || fromBearer;
-  return provided === key;
-}
-
-function normalize(value: string): string {
-  return value
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-
-function countryMatches(
-  requestedCountry: string | undefined,
-  place: string | undefined,
-  addresses: Array<{ country?: string }>,
-): boolean {
-  if (!requestedCountry) return false;
-
-  const wanted = normalize(requestedCountry);
-
-  if (place && normalize(place).includes(wanted)) {
-    return true;
-  }
-
-  return addresses.some(
-    (address) => address.country !== undefined && normalize(address.country).includes(wanted),
-  );
-}
-
-function computeMatchScore(match: {
-  nameMatch: boolean;
-  dateOfBirthMatch: boolean;
-  countryOfBirthMatch: boolean;
-}): number {
-  if (match.nameMatch && match.dateOfBirthMatch && match.countryOfBirthMatch) {
-    return 100;
-  }
-  if (match.nameMatch && match.dateOfBirthMatch) {
-    return 80;
-  }
-  if (match.nameMatch && match.countryOfBirthMatch) {
-    return 60;
-  }
-  if (match.nameMatch) {
-    return 40;
-  }
-  return 0;
+  return (fromXApiKey || fromBearer) === key;
 }
 
 async function screenPerson(input: ScreenPersonRequest) {
@@ -117,60 +120,64 @@ async function screenPerson(input: ScreenPersonRequest) {
     throw new Error('Sanctions mirror is not ready');
   }
 
+  // Merge shorthand fields (passportNumber, nationalId) with the identifiers
+  // array so callers can use whichever form is most convenient.
+  const identifiers: Array<{ type: string; value: string }> = [
+    ...(input.passportNumber ? [{ type: 'Passport', value: input.passportNumber }] : []),
+    ...(input.nationalId ? [{ type: 'National ID', value: input.nationalId }] : []),
+    ...(input.identifiers ?? []).map((id) => ({ type: id.type ?? 'ID', value: id.value })),
+  ];
+
   const result = await svc.screenName(
     {
       query: input.name,
       entityType: 'person',
-      matchMode: 'strict',
-      autoFallback: false,
+      matchMode: input.matchMode ?? 'strict',
       sources: SOURCE_CODES,
       limit: 100,
       offset: 0,
+      ...(input.dateOfBirth ? { dateOfBirth: input.dateOfBirth } : {}),
+      ...(input.nationality ? { nationality: input.nationality } : {}),
+      ...(identifiers.length ? { identifiers } : {}),
+      ...(input.customerRef ? { customerRef: input.customerRef } : {}),
     },
     {} as never,
   );
 
-  const matches = [];
-
-  for (const hit of result.hits) {
-    const designation = await svc.getDesignation(hit.source, hit.sourceEntryId);
-
-    if (!designation) continue;
-
-    const datesOfBirth = designation.payload.datesOfBirth ?? [];
-
-    const dateOfBirthMatch =
-      !!input.dateOfBirth && datesOfBirth.some((dob) => dob.date === input.dateOfBirth);
-
-    const countryOfBirthMatch =
-      !!input.countryOfBirth &&
-      datesOfBirth.some((dob) =>
-        countryMatches(input.countryOfBirth, dob.place, designation.payload.addresses ?? []),
-      );
-
-    matches.push({
+  const matches = result.hits.map((hit) => {
+    const matchScore = computeMatchScore(hit.matchType, hit.attributeCheck);
+    return {
       source: SOURCE_LABELS[hit.source],
       sourceCode: hit.source,
+      sourceEntryId: hit.sourceEntryId,
       matchedName: hit.matchedName,
       primaryName: hit.primaryName,
       matchType: hit.matchType,
-      nameMatch: true,
-      dateOfBirthMatch,
-      countryOfBirthMatch,
-      matchScore: computeMatchScore({
-        nameMatch: true,
-        dateOfBirthMatch,
-        countryOfBirthMatch,
-      }),
-    });
-  }
+      // matchScore: 0–100, same scale as before — use this for decision thresholds.
+      // Now computed from attributeCheck signals rather than manual comparison.
+      matchScore,
+      ...(hit.score !== undefined ? { fuzzyScore: hit.score } : {}),
+      ...(hit.designationDate ? { designationDate: hit.designationDate } : {}),
+      ...(hit.program ? { program: hit.program } : {}),
+      // attributeCheck is present when dateOfBirth / nationality / identifiers
+      // were supplied. Signals: match | mismatch | not_on_record | not_provided.
+      // mismatch on a field the list entry publishes = likely a different person.
+      ...(hit.attributeCheck ? { attributeCheck: hit.attributeCheck } : {}),
+    };
+  });
 
-  const matchScore =
-    matches.length === 0 ? 0 : Math.max(...matches.map((match) => match.matchScore));
+  const overallMatchScore =
+    matches.length === 0 ? 0 : Math.max(...matches.map((m) => m.matchScore));
 
   return {
     status: matches.length > 0 ? 'potential_match' : 'no_match',
-    matchScore,
+    matchScore: overallMatchScore,
+    // Audit trail: record alongside every decision for compliance reproducibility.
+    listVersion: result.listVersion,
+    matcherVersion: result.matcherVersion,
+    ...(result.clearedHitsCount !== undefined
+      ? { clearedHitsCount: result.clearedHitsCount }
+      : {}),
     matches,
   };
 }
@@ -185,43 +192,28 @@ export function startAmlApi(): void {
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'POST' && req.url === '/api/aml/screen-person') {
-        const body = await readBody(req);
-
-        if (API_KEY) {
-          if (!apiKeyValid(req, API_KEY)) {
-            return json(res, 401, {
-              error: 'Unauthorized',
-            });
-          }
+        if (API_KEY && !apiKeyValid(req, API_KEY)) {
+          return json(res, 401, { error: 'Unauthorized' });
         }
 
+        const body = await readBody(req);
         let input: ScreenPersonRequest;
-
         try {
-          input = JSON.parse(body.toString('utf8'));
+          input = JSON.parse(body.toString('utf8')) as ScreenPersonRequest;
         } catch {
-          return json(res, 400, {
-            error: 'Invalid JSON request body',
-          });
+          return json(res, 400, { error: 'Invalid JSON request body' });
         }
 
         if (!input.name || typeof input.name !== 'string') {
-          return json(res, 400, {
-            error: 'name is required',
-          });
+          return json(res, 400, { error: 'name is required' });
         }
 
-        const result = await screenPerson(input);
-
-        return json(res, 200, result);
+        return json(res, 200, await screenPerson(input));
       }
 
-      return json(res, 404, {
-        error: 'Not found',
-      });
+      return json(res, 404, { error: 'Not found' });
     } catch (error) {
       console.error('AML API error:', error);
-
       return json(res, 500, {
         error: error instanceof Error ? error.message : 'Internal server error',
       });

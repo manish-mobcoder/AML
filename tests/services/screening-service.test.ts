@@ -829,3 +829,103 @@ describe('re-harvest idempotence (issue #14)', () => {
     expect(rejected.hits).toHaveLength(0);
   });
 });
+
+// ─── Attribute-check (corroboration / exculpation) ────────────────────────────
+//
+// Fixture FX-1001 (Ivan Testovich Volkov):
+//   DOB          1970-01-01, place Testograd
+//   Nationality  Testland
+//   Identifier   Passport X1234567 (Testland)
+
+describe('screenName — attribute-level corroboration / exculpation', () => {
+  it('omits attributeCheck entirely when no attributes are supplied', async () => {
+    const res = await svc.screenName({ ...screenDefaults, query: 'Ivan Testovich Volkov' }, ctx);
+    const hit = res.hits.find((h) => h.sourceEntryId === 'FX-1001');
+    expect(hit).toBeDefined();
+    expect(hit?.attributeCheck).toBeUndefined();
+  });
+
+  it('returns match on an exact DOB', async () => {
+    const res = await svc.screenName(
+      { ...screenDefaults, query: 'Ivan Testovich Volkov', dateOfBirth: '1970-01-01' },
+      ctx,
+    );
+    const hit = res.hits.find((h) => h.sourceEntryId === 'FX-1001');
+    expect(hit?.attributeCheck?.dob).toBe('match');
+  });
+
+  it('returns match on year-only DOB', async () => {
+    const res = await svc.screenName(
+      { ...screenDefaults, query: 'Ivan Testovich Volkov', dateOfBirth: '1970' },
+      ctx,
+    );
+    expect(res.hits.find((h) => h.sourceEntryId === 'FX-1001')?.attributeCheck?.dob).toBe('match');
+  });
+
+  it('returns mismatch on a DOB >2 years away', async () => {
+    const res = await svc.screenName(
+      { ...screenDefaults, query: 'Ivan Testovich Volkov', dateOfBirth: '1985-06-15' },
+      ctx,
+    );
+    expect(res.hits.find((h) => h.sourceEntryId === 'FX-1001')?.attributeCheck?.dob).toBe('mismatch');
+  });
+
+  it('returns match on an exact identifier', async () => {
+    const res = await svc.screenName(
+      {
+        ...screenDefaults,
+        query: 'Ivan Testovich Volkov',
+        identifiers: [{ type: 'Passport', value: 'X1234567' }],
+      },
+      ctx,
+    );
+    expect(res.hits.find((h) => h.sourceEntryId === 'FX-1001')?.attributeCheck?.identifier).toBe(
+      'match',
+    );
+  });
+
+  it('returns mismatch when the designation has identifiers but none match', async () => {
+    const res = await svc.screenName(
+      {
+        ...screenDefaults,
+        query: 'Ivan Testovich Volkov',
+        identifiers: [{ value: 'Z9999999' }],
+      },
+      ctx,
+    );
+    expect(res.hits.find((h) => h.sourceEntryId === 'FX-1001')?.attributeCheck?.identifier).toBe(
+      'mismatch',
+    );
+  });
+
+  it('returns match on nationality regardless of demonym vs country name', async () => {
+    const res = await svc.screenName(
+      { ...screenDefaults, query: 'Ivan Testovich Volkov', nationality: 'Testland' },
+      ctx,
+    );
+    expect(res.hits.find((h) => h.sourceEntryId === 'FX-1001')?.attributeCheck?.nationality).toBe(
+      'match',
+    );
+  });
+
+  it('returns not_on_record for an org that has no DOB', async () => {
+    const res = await svc.screenName(
+      { ...screenDefaults, query: 'Fictional Trading Company LLC', dateOfBirth: '1990-01-01' },
+      ctx,
+    );
+    // FX-2002 is an org with empty datesOfBirth
+    expect(
+      res.hits.find((h) => h.sourceEntryId === 'FX-2002')?.attributeCheck?.dob,
+    ).toBe('not_on_record');
+  });
+
+  it('carries attributeCheck through fuzzy fallback hits', async () => {
+    const res = await svc.screenName(
+      { ...screenDefaults, query: 'Ivan Wolkow', dateOfBirth: '1970-01-01', matchMode: 'fuzzy' },
+      ctx,
+    );
+    const hit = res.hits.find((h) => h.sourceEntryId === 'FX-1001');
+    expect(hit).toBeDefined();
+    expect(hit?.attributeCheck?.dob).toBe('match');
+  });
+});

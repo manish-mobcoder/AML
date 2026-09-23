@@ -28,11 +28,17 @@ import {
   designationStoreSpec,
   ensureDesignationAuxSchema,
   ensureLeiAuxSchema,
+  ensureWhitelistSchema,
   LEI_RELATIONSHIP_TABLE,
   leiStoreSpec,
   NAME_FTS_TABLE,
   NAME_TABLE,
+  WHITELIST_TABLE,
 } from '@/services/screening/schema.js';
+import {
+  computeAttributeCheck,
+  hasAttributeQuery,
+} from '@/services/screening/attribute-check.js';
 import {
   bestTokenScore,
   buildFtsMatch,
@@ -44,6 +50,7 @@ import {
   tokenize,
 } from '@/services/screening/text-matching.js';
 import type {
+  AttributeQuery,
   DesignationPayload,
   EntityType,
   LeiMatch,
@@ -82,8 +89,25 @@ export interface MirrorReadiness {
  */
 export type CountBasis = 'exact' | 'lower_bound';
 
+/** A recorded analyst clearance row. */
+export interface HitClearance {
+  customerRef: string;
+  designationId: string;
+  clearedAt: string;
+  clearedBy?: string;
+  reason?: string;
+  attributeFingerprint?: string;
+}
+
 /** Options for {@link ScreeningService.screenName}. */
-export interface ScreenNameOptions {
+export interface ScreenNameOptions extends AttributeQuery {
+  /**
+   * Opaque caller-supplied customer identifier. When provided, hits that an
+   * analyst has already cleared for this customer (via `clearHit`) are silently
+   * excluded from results — the false-positive memory feature. We store no
+   * customer PII; the ref is whatever the caller uses to identify the customer.
+   */
+  customerRef?: string;
   /**
    * Whether a strict pass that finds nothing auto-upgrades to a fuzzy pass.
    * Defaults to `true` for the user-facing `sanctions_screen_name` tool (an empty
@@ -111,6 +135,22 @@ export interface ScreenNameResult {
   /** True when a strict pass returned nothing and fuzzy was attempted. */
   fuzzyFallbackTriggered: boolean;
   hits: ScreeningHit[];
+  /**
+   * Number of hits suppressed because they were previously cleared by an
+   * analyst for this customer. Only present when `customerRef` was supplied.
+   */
+  clearedHitsCount?: number;
+  /**
+   * ISO 8601 timestamp of the last complete sanctions mirror sync — the list
+   * version used to produce this result. Record this alongside any decision
+   * for audit reproducibility.
+   */
+  listVersion?: string;
+  /**
+   * Server package version — a proxy for the matcher version. Record alongside
+   * `listVersion` so any screening decision can be re-derived in an audit.
+   */
+  matcherVersion: string;
   /** The match mode actually used (may upgrade strict→fuzzy on empty strict). */
   modeUsed: MatchMode;
   /** Folded query the server matched on. */
@@ -192,6 +232,16 @@ interface LeiCandidateRow {
  * than a config knob.
  */
 const WHOLE_STRING_MIN_LENGTH_RATIO = 0.5;
+
+/** Server package version — used as the matcher version in audit responses. */
+const MATCHER_VERSION: string = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return (require('../../../package.json') as { version: string }).version;
+  } catch {
+    return 'unknown';
+  }
+})();
 
 /**
  * Cap on RAW (pre-dedup) alias rows the strict designation scan reads. A common
@@ -279,6 +329,7 @@ export class ScreeningService {
     const raw = await this.designationMirror.raw();
     if (!this.designationAuxReady) {
       ensureDesignationAuxSchema(raw);
+      ensureWhitelistSchema(raw);
       this.designationAuxReady = true;
     }
     return raw;
@@ -584,6 +635,84 @@ export class ScreeningService {
     await this.markLeiReady(fixtures.leiEntities.length);
   }
 
+  // ─── False-positive memory (hit clearances) ──────────────────────────────
+
+  /**
+   * Record that an analyst has reviewed a screening hit for a specific customer
+   * and confirmed it is not a match. The (customerRef, designationId) pair will
+   * be suppressed in future `screenName` calls for that customer until revoked.
+   */
+  async clearHit(opts: {
+    customerRef: string;
+    designationId: string;
+    clearedBy?: string;
+    reason?: string;
+    attributeFingerprint?: string;
+  }): Promise<void> {
+    const handle = await this.designationHandle();
+    handle
+      .prepare(
+        `INSERT INTO ${WHITELIST_TABLE}
+           (customer_ref, designation_id, cleared_at, cleared_by, reason, attribute_fingerprint)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(customer_ref, designation_id) DO UPDATE SET
+           cleared_at=excluded.cleared_at,
+           cleared_by=excluded.cleared_by,
+           reason=excluded.reason,
+           attribute_fingerprint=excluded.attribute_fingerprint`,
+      )
+      .run(
+        opts.customerRef,
+        opts.designationId,
+        new Date().toISOString(),
+        opts.clearedBy ?? null,
+        opts.reason ?? null,
+        opts.attributeFingerprint ?? null,
+      );
+  }
+
+  /** Remove a previously recorded clearance — re-enables alerting for the pair. */
+  async revokeClearance(customerRef: string, designationId: string): Promise<void> {
+    const handle = await this.designationHandle();
+    handle
+      .prepare(`DELETE FROM ${WHITELIST_TABLE} WHERE customer_ref = ? AND designation_id = ?`)
+      .run(customerRef, designationId);
+  }
+
+  /** All clearances recorded for a customer. */
+  async listClearances(customerRef: string): Promise<HitClearance[]> {
+    const handle = await this.designationHandle();
+    return handle
+      .prepare<{
+        customer_ref: string;
+        designation_id: string;
+        cleared_at: string;
+        cleared_by: string | null;
+        reason: string | null;
+        attribute_fingerprint: string | null;
+      }>(`SELECT * FROM ${WHITELIST_TABLE} WHERE customer_ref = ? ORDER BY cleared_at DESC`)
+      .all(customerRef)
+      .map((r) => ({
+        customerRef: r.customer_ref,
+        designationId: r.designation_id,
+        clearedAt: r.cleared_at,
+        ...(r.cleared_by ? { clearedBy: r.cleared_by } : {}),
+        ...(r.reason ? { reason: r.reason } : {}),
+        ...(r.attribute_fingerprint ? { attributeFingerprint: r.attribute_fingerprint } : {}),
+      }));
+  }
+
+  /** Fetch the set of designation IDs cleared for a customer — used during screening. */
+  private async clearedIdsForCustomer(customerRef: string): Promise<Set<string>> {
+    const handle = await this.designationHandle();
+    const rows = handle
+      .prepare<{ designation_id: string }>(
+        `SELECT designation_id FROM ${WHITELIST_TABLE} WHERE customer_ref = ?`,
+      )
+      .all(customerRef);
+    return new Set(rows.map((r) => r.designation_id));
+  }
+
   // ─── Matching engine: screen a name against the sanctions lists ────────────
 
   /**
@@ -596,6 +725,14 @@ export class ScreeningService {
     const queryTokens = tokenize(normalizedQuery);
     const handle = await this.designationHandle();
     const offset = opts.offset ?? 0;
+
+    // Load cleared designation IDs once — empty set when no customerRef supplied.
+    const clearedIds = opts.customerRef
+      ? await this.clearedIdsForCustomer(opts.customerRef)
+      : new Set<string>();
+
+    // Capture list version at query time for audit reproducibility.
+    const listVersion = (await this.designationMirror.status()).completedAt;
 
     const sourceFilter = this.sourceFilterClause(opts.sources);
     // entityType is enum-constrained at the tool boundary; escape at the SQL sink
@@ -624,13 +761,22 @@ export class ScreeningService {
         normalizedQuery,
         hitCount: strictHits.length,
       });
+      const filtered = clearedIds.size
+        ? strictHits.filter((h) => !clearedIds.has(h.designationId))
+        : strictHits;
+      const clearedCount = strictHits.length - filtered.length;
+      const pageHits = filtered.slice(offset, offset + opts.limit);
+      if (hasAttributeQuery(opts)) await this.attachAttributeChecks(pageHits, opts);
       return {
-        hits: strictHits.slice(offset, offset + opts.limit),
+        hits: pageHits,
         modeUsed: 'strict',
         normalizedQuery,
         fuzzyFallbackTriggered: false,
-        totalAvailable: strictHits.length,
+        totalAvailable: filtered.length,
         totalAvailableBasis: strict.capped ? 'lower_bound' : 'exact',
+        ...(opts.customerRef ? { clearedHitsCount: clearedCount } : {}),
+        ...(listVersion ? { listVersion } : {}),
+        matcherVersion: MATCHER_VERSION,
       };
     }
 
@@ -647,22 +793,31 @@ export class ScreeningService {
 
     // Merge: keep strict hits (deterministic, unscored) ahead of fuzzy, dedup by id.
     const merged = this.mergeHits(strictHits, fuzzyHits);
-    ctx.log.debug('Fuzzy screening complete', {
+    ctx?.log?.debug('Fuzzy screening complete', {
       normalizedQuery,
       strictCount: strictHits.length,
       fuzzyCount: fuzzyHits.length,
       minScore,
     });
+    const filteredMerged = clearedIds.size
+      ? merged.filter((h) => !clearedIds.has(h.designationId))
+      : merged;
+    const clearedCount = merged.length - filteredMerged.length;
+    const pageHits = filteredMerged.slice(offset, offset + opts.limit);
+    if (hasAttributeQuery(opts)) await this.attachAttributeChecks(pageHits, opts);
     return {
-      hits: merged.slice(offset, offset + opts.limit),
+      hits: pageHits,
       modeUsed: 'fuzzy',
       normalizedQuery,
       fuzzyFallbackTriggered: opts.matchMode === 'strict' && strictHits.length === 0,
-      totalAvailable: merged.length,
+      totalAvailable: filteredMerged.length,
       // The fuzzy pool comes from bounded blocking queries and is truncated to
       // `fuzzyMaxResults` before the merge, so no fuzzy-mode count can be a
       // corpus-wide total — it is always a floor on what scoring actually saw.
       totalAvailableBasis: 'lower_bound',
+      ...(opts.customerRef ? { clearedHitsCount: clearedCount } : {}),
+      ...(listVersion ? { listVersion } : {}),
+      matcherVersion: MATCHER_VERSION,
     };
   }
 
@@ -899,6 +1054,31 @@ export class ScreeningService {
     return coveredTokens * 2 >= queryTokenCount;
   }
 
+  /**
+   * Batch-fetch designation payloads for the given hits and attach
+   * `attributeCheck` to each one using the supplied attribute query. Only
+   * called when the caller actually provided at least one attribute — bounded
+   * by `limit` (max 100 rows per page).
+   */
+  private async attachAttributeChecks(
+    hits: ScreeningHit[],
+    query: AttributeQuery,
+  ): Promise<void> {
+    if (hits.length === 0) return;
+    const rows = await this.designationMirror.getByIds(hits.map((h) => h.designationId));
+    const payloadById = new Map<string, DesignationPayload>();
+    for (const row of rows) {
+      if (row.payload) {
+        payloadById.set(String(row.id), JSON.parse(String(row.payload)) as DesignationPayload);
+      }
+    }
+    for (const hit of hits) {
+      const payload = payloadById.get(hit.designationId);
+      if (!payload) continue;
+      hit.attributeCheck = computeAttributeCheck(query, payload);
+    }
+  }
+
   private mergeHits(strict: ScreeningHit[], fuzzy: ScreeningHit[]): ScreeningHit[] {
     const seen = new Set(strict.map((h) => h.designationId));
     const out = [...strict];
@@ -986,7 +1166,7 @@ export class ScreeningService {
     });
     const seen = new Set(strict.map((m) => m.lei));
     const merged = [...strict, ...fuzzy.filter((m) => !seen.has(m.lei))];
-    ctx.log.debug('LEI resolution complete', {
+    ctx?.log?.debug('LEI resolution complete', {
       normalizedQuery,
       strictCount: strict.length,
       fuzzyCount: fuzzy.length,

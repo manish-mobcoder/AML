@@ -26,6 +26,11 @@ export const NAME_FTS_TABLE = 'name_fts';
 export const LEI_ENTITY_TABLE = 'lei_entity';
 /** GLEIF Level 2 ownership relationships. */
 export const LEI_RELATIONSHIP_TABLE = 'lei_relationship';
+/**
+ * False-positive memory: analyst-cleared (customer, designation) pairs. Lives
+ * in the same DB as designations but is never touched by mirror refreshes.
+ */
+export const WHITELIST_TABLE = 'hit_clearance';
 
 /**
  * `sqliteMirrorStore` spec for the sanctions designation mirror. Columns mirror
@@ -108,6 +113,31 @@ export function ensureDesignationAuxSchema(handle: SqliteHandle): void {
       INSERT INTO ${NAME_FTS_TABLE}(${NAME_FTS_TABLE}, rowid, normalized)
         VALUES ('delete', old.rowid, old.normalized);
     END;
+  `);
+}
+
+/**
+ * Create the hit-clearance (false-positive memory) table. Idempotent. Lives in
+ * `sanctions.db` alongside designations but is never wiped by mirror refreshes.
+ *
+ * `customer_ref` is an opaque caller-supplied identifier — we store no customer
+ * PII ourselves. `attribute_fingerprint` is a JSON snapshot of the attributes
+ * (DOB, nationality, identifiers) used at clearance time; if they change, the
+ * clearance is stale and the caller should revoke it.
+ */
+export function ensureWhitelistSchema(handle: SqliteHandle): void {
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS ${WHITELIST_TABLE} (
+      customer_ref          TEXT NOT NULL,
+      designation_id        TEXT NOT NULL,
+      cleared_at            TEXT NOT NULL,
+      cleared_by            TEXT,
+      reason                TEXT,
+      attribute_fingerprint TEXT,
+      PRIMARY KEY (customer_ref, designation_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_clearance_customer
+      ON ${WHITELIST_TABLE}(customer_ref);
   `);
 }
 

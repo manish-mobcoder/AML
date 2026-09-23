@@ -16,6 +16,24 @@ import { SCREENING_CAVEAT } from './_shared.js';
 
 const SOURCE_ENUM = z.enum(SOURCE_CODE_ENUM);
 
+const ATTRIBUTE_SIGNAL_ENUM = z.enum(['match', 'mismatch', 'not_provided', 'not_on_record']);
+
+const AttributeCheckSchema = z
+  .object({
+    dob: ATTRIBUTE_SIGNAL_ENUM.describe(
+      'match = DOB agrees (corroborating) · mismatch = DOB conflicts (exculpatory — likely different person) · not_on_record = list entry has no DOB · not_provided = caller did not supply a DOB.',
+    ),
+    nationality: ATTRIBUTE_SIGNAL_ENUM.describe(
+      'match = nationality agrees · mismatch = nationality conflicts · not_on_record = list entry has no nationality · not_provided = caller did not supply a nationality.',
+    ),
+    identifier: ATTRIBUTE_SIGNAL_ENUM.describe(
+      'Best signal across all supplied identifiers. match = a passport/ID number exactly matches the list entry (near-decisive) · mismatch = the list entry carries identifiers but none match the supplied ones (exculpatory) · not_on_record = list entry has no identifiers · not_provided = caller supplied no identifiers.',
+    ),
+  })
+  .describe(
+    'Corroboration/exculpation signals for the attributes the caller supplied. Present only when at least one of dateOfBirth, nationality, or identifiers was provided. A mismatch on a field the list entry publishes is the strongest exculpatory signal — it means the listed person and the queried person are very likely different individuals.',
+  );
+
 const HitSchema = z
   .object({
     source: SOURCE_ENUM.describe('Which watchlist this candidate is on — its provenance.'),
@@ -64,6 +82,7 @@ const HitSchema = z
       .string()
       .optional()
       .describe('Designation date as published, when available.'),
+    attributeCheck: AttributeCheckSchema.optional(),
   })
   .describe('One potential match — a candidate to verify, never a determination.');
 
@@ -95,6 +114,38 @@ export const screenNameTool = tool('sanctions_screen_name', {
       .optional()
       .describe(
         "Score floor for fuzzy hits (0–1), applied uniformly to every fuzzy candidate regardless of how it was matched (Jaro-Winkler, token, or phonetic). No hit below this score is returned. Applies to fuzzy mode only; defaults to the server's configured floor.",
+      ),
+    customerRef: z
+      .string()
+      .optional()
+      .describe(
+        'Your internal customer identifier. When provided, hits that an analyst has already cleared for this customer via sanctions_clear_hit are automatically suppressed — the false-positive memory. The same Mohammed Al-Rashid will not re-queue every day once cleared.',
+      ),
+    dateOfBirth: z
+      .string()
+      .optional()
+      .describe(
+        'Date of birth to cross-check against the designation record — ISO 8601 (YYYY-MM-DD), year-month (YYYY-MM), or year only (YYYY). When provided, each hit gains an attributeCheck.dob signal: match corroborates the name hit; mismatch is exculpatory (the listed person and the queried person are very likely different individuals).',
+      ),
+    nationality: z
+      .string()
+      .optional()
+      .describe(
+        'Country of nationality or citizenship — country name, demonym (e.g. "Jordanian"), or ISO-2 code (e.g. "JO"). When provided, each hit gains an attributeCheck.nationality signal.',
+      ),
+    identifiers: z
+      .array(
+        z.object({
+          value: z.string().min(1).describe('Passport number, national ID, or other document value.'),
+          type: z
+            .string()
+            .optional()
+            .describe('Document type (e.g. "Passport", "National ID"). Omit when unknown.'),
+        }),
+      )
+      .optional()
+      .describe(
+        'Passport or national-ID numbers to cross-check. An exact match against a designation identifier is near-decisive; a mismatch where the list entry carries identifiers is strongly exculpatory.',
       ),
     sources: z
       .array(SOURCE_ENUM)
@@ -157,6 +208,24 @@ export const screenNameTool = tool('sanctions_screen_name', {
       .describe(
         'Guidance when no candidate matched — how to broaden, and what an empty result does NOT mean — or when the requested offset sits past the end of the result set.',
       ),
+    clearedHitsCount: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        'Number of hits suppressed because an analyst previously cleared them for this customer (via sanctions_clear_hit). Only present when customerRef was supplied.',
+      ),
+    listVersion: z
+      .string()
+      .optional()
+      .describe(
+        'ISO 8601 timestamp of the last complete sanctions list sync used to produce this result. Record alongside your decision for audit reproducibility.',
+      ),
+    matcherVersion: z
+      .string()
+      .describe(
+        'Server version — a proxy for the matcher version. Record alongside listVersion so any decision can be re-derived in an audit.',
+      ),
   },
   errors: [
     {
@@ -184,6 +253,17 @@ export const screenNameTool = tool('sanctions_screen_name', {
         entityType: input.entityType,
         matchMode: input.matchMode,
         ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
+        ...(input.customerRef ? { customerRef: input.customerRef } : {}),
+        ...(input.dateOfBirth ? { dateOfBirth: input.dateOfBirth } : {}),
+        ...(input.nationality ? { nationality: input.nationality } : {}),
+        ...(input.identifiers?.length
+          ? {
+              identifiers: input.identifiers.map((i) => ({
+                value: i.value,
+                ...(i.type ? { type: i.type } : {}),
+              })),
+            }
+          : {}),
         sources,
         limit: input.limit,
         offset: input.offset,
@@ -199,6 +279,11 @@ export const screenNameTool = tool('sanctions_screen_name', {
       totalAvailableBasis: result.totalAvailableBasis,
       hasMore,
       ...(hasMore ? { nextOffset: input.offset + result.hits.length } : {}),
+      ...(result.clearedHitsCount !== undefined
+        ? { clearedHitsCount: result.clearedHitsCount }
+        : {}),
+      ...(result.listVersion ? { listVersion: result.listVersion } : {}),
+      matcherVersion: result.matcherVersion,
     });
     ctx.enrich.total(result.hits.length);
     // An empty page has two very different causes; conflating them would either
@@ -229,6 +314,7 @@ export const screenNameTool = tool('sanctions_screen_name', {
         ...(h.queryTokenCoverage ? { queryTokenCoverage: h.queryTokenCoverage } : {}),
         ...(h.program ? { program: h.program } : {}),
         ...(h.designationDate ? { designationDate: h.designationDate } : {}),
+        ...(h.attributeCheck ? { attributeCheck: h.attributeCheck } : {}),
       })),
       caveat: SCREENING_CAVEAT,
     };
@@ -253,6 +339,17 @@ export const screenNameTool = tool('sanctions_screen_name', {
         lines.push(`**Matched on:** "${h.matchedName}" (${h.matchedNameType})`);
         if (h.program) lines.push(`**Program:** ${h.program}`);
         if (h.designationDate) lines.push(`**Designated:** ${h.designationDate}`);
+        if (h.attributeCheck) {
+          const ac = h.attributeCheck;
+          const fmt = (label: string, sig: string) => {
+            const icon =
+              sig === 'match' ? '✓' : sig === 'mismatch' ? '✗' : '–';
+            return `${icon} ${label}: ${sig}`;
+          };
+          lines.push(
+            `**Attribute check:** ${fmt('DOB', ac.dob)} · ${fmt('Nationality', ac.nationality)} · ${fmt('Identifier', ac.identifier)}`,
+          );
+        }
         lines.push('');
       }
     }

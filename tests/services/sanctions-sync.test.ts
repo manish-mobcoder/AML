@@ -151,9 +151,14 @@ async function drainSync(
   return pages;
 }
 
-/** The no-op deferred-field sink; the sanctions sync requires one. */
+/**
+ * The no-op deferred-field sink, running only the sources that have a
+ * corresponding mock body — so adding a new source doesn't silently break
+ * these characterization tests.
+ */
 function noopSync(): ReturnType<typeof createSanctionsSync> {
-  return createSanctionsSync({ applyDeferredFields: async () => {} });
+  const ingesters = buildSanctionsIngesters().filter((i) => SOURCE_BODIES.has(i.url()));
+  return createSanctionsSync({ applyDeferredFields: async () => {}, ingesters });
 }
 
 afterEach(() => {
@@ -236,6 +241,7 @@ describe('createSanctionsSync — harvest loop contract', () => {
     await drainSync(
       createSanctionsSync({
         applyDeferredFields: async () => {},
+        ingesters: buildSanctionsIngesters().filter((i) => bodies.has(i.url())),
         onSourceReport: (report) => reports.push(report),
       }),
     );
@@ -337,10 +343,30 @@ describe('OFAC deferred programme join', () => {
   ): Promise<(id: string) => Record<string, unknown> | undefined> {
     stubSourceFetch(bodies);
     harness = await freshService();
-    await harness.service.designations.runSync({
-      mode: 'init',
-      signal: new AbortController().signal,
-    });
+    // Run the sync with only the ingesters that have mocked responses, so
+    // network-fetching sources not in `bodies` don't reach real endpoints.
+    const ingesters = buildSanctionsIngesters().filter((i) => bodies.has(i.url()));
+    const signal = new AbortController().signal;
+    for await (const designation of createSanctionsSync({
+      applyDeferredFields: (source, fields) =>
+        harness!.service.applyDeferredFields(source, fields),
+      ingesters,
+    })({ signal })) {
+      await harness!.service.ingestDesignations(
+        designation.records.map((r) => ({
+          id: String(r.id),
+          source: r.source as import('@/services/screening/types.js').SourceCode,
+          sourceEntryId: String(r.source_entry_id),
+          entityType: String(r.entity_type) as import('@/services/screening/types.js').EntityType,
+          primaryName: String(r.primary_name),
+          ...(r.program ? { program: String(r.program) } : {}),
+          ...(r.legal_basis ? { legalBasis: String(r.legal_basis) } : {}),
+          ...(r.designation_date ? { designationDate: String(r.designation_date) } : {}),
+          payload: JSON.parse(String(r.payload)) as import('@/services/screening/types.js').DesignationPayload,
+        })),
+      );
+    }
+    await harness.service.markSanctionsReady(0);
     const handle = await harness.service.designations.raw();
     const rows = handle
       .prepare<Record<string, unknown>>(

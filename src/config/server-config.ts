@@ -12,10 +12,9 @@ import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 /**
  * Default upstream source endpoints. OFAC/EU/UK/UN are official XML paths.
- * India and UAE official portals do not publish a stable bulk XML/CSV feed
- * (MHA pages are HTML/PDF; UAE EOCN Excel is behind a WAF), so the defaults
- * harvest the OpenSanctions FollowTheMoney JSONL exports of those same
- * official lists — override via env if you mirror the files yourself.
+ * India UAPA is fetched directly from the MHA Banned Organizations page
+ * (PDF scrape — no third-party intermediary). UAE EOCN is a bundled static
+ * list; the official portal is behind a WAF — see `uae-local-data.ts`.
  */
 export const DEFAULT_SOURCE_URLS = {
   ofacSdn:
@@ -26,10 +25,8 @@ export const DEFAULT_SOURCE_URLS = {
     'https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw',
   ukSanctions: 'https://sanctionslist.fcdo.gov.uk/docs/UK-Sanctions-List.xml',
   unSc: 'https://scsanctions.un.org/resources/xml/en/consolidated.xml',
-  indiaUapa: 'https://data.opensanctions.org/datasets/latest/in_mha_banned/entities.ftm.json',
   indiaWatchlist:
     'bundled:india-watchlist (India FEO + NIA Most Wanted — curated, not a live bulk feed)',
-  uaeLocal: 'https://data.opensanctions.org/datasets/latest/ae_local_terrorists/entities.ftm.json',
   gleifGoldenCopyBase: 'https://goldencopy.gleif.org',
 } as const;
 
@@ -76,23 +73,11 @@ const ServerConfigSchema = z.object({
     .string()
     .default(DEFAULT_SOURCE_URLS.unSc)
     .describe('UN Security Council consolidated XML URL.'),
-  indiaUapaUrl: z
-    .string()
-    .default(DEFAULT_SOURCE_URLS.indiaUapa)
-    .describe(
-      'India UAPA (MHA banned orgs/individuals) harvest URL — default OpenSanctions FTM JSONL of the official MHA lists.',
-    ),
   indiaWatchlistUrl: z
     .string()
     .default(DEFAULT_SOURCE_URLS.indiaWatchlist)
     .describe(
       'Provenance label for the bundled India FEO / NIA most-wanted list (not a download URL).',
-    ),
-  uaeLocalUrl: z
-    .string()
-    .default(DEFAULT_SOURCE_URLS.uaeLocal)
-    .describe(
-      'UAE Local Terrorist List harvest URL — default OpenSanctions FTM JSONL of the official EOCN list.',
     ),
   gleifGoldenCopyBaseUrl: z
     .string()
@@ -116,9 +101,7 @@ export function getServerConfig(): ServerConfig {
     euFsfUrl: 'EU_FSF_URL',
     ukSanctionsUrl: 'UK_SANCTIONS_URL',
     unScUrl: 'UN_SC_URL',
-    indiaUapaUrl: 'INDIA_UAPA_URL',
     indiaWatchlistUrl: 'INDIA_WATCHLIST_URL',
-    uaeLocalUrl: 'UAE_LOCAL_URL',
     gleifGoldenCopyBaseUrl: 'GLEIF_GOLDEN_COPY_BASE_URL',
   });
   return _config;

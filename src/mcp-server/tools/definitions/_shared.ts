@@ -9,6 +9,7 @@
  */
 
 import { DEFAULT_SOURCE_URLS, getServerConfig } from '@/config/server-config.js';
+import { UAE_LOCAL_SOURCE_URL, UAE_LOCAL_VERSION } from '@/services/screening/uae-local-data.js';
 import type { SourceCode } from '@/services/screening/types.js';
 
 /**
@@ -27,11 +28,11 @@ export const SOURCE_LICENSES: Record<SourceCode, string> = {
   uk: 'Open Government Licence v3.0 (attribution required)',
   un: 'Freely redistributable',
   india_uapa:
-    'Government of India / MHA publication — harvested via OpenSanctions FTM export; verify commercial redistribution terms',
+    'Government of India / MHA publication — fetched directly from mha.gov.in (official source)',
   india_watchlist:
     'Curated India FEO + NIA most-wanted compilation — not a live official bulk feed; verify against the cited source',
   uae_local:
-    'UAE EOCN Local Terrorist List — harvested via OpenSanctions FTM export; verify commercial redistribution terms',
+    'UAE EOCN Local Terrorist List — bundled static dataset; verify against the official EOCN portal',
 };
 
 /** GLEIF golden copy is CC0 — cited but no attribution required. */
@@ -53,9 +54,10 @@ export function sourceUrls(): Record<SourceCode, string> {
     eu: cfg.euFsfUrl,
     uk: cfg.ukSanctionsUrl,
     un: cfg.unScUrl,
-    india_uapa: cfg.indiaUapaUrl,
+    india_uapa:
+      'https://www.mha.gov.in/en/divisionofmha/counter-terrorism-and-counter-radicalization-division/Banned-Organizations',
     india_watchlist: cfg.indiaWatchlistUrl,
-    uae_local: cfg.uaeLocalUrl,
+    uae_local: `${UAE_LOCAL_SOURCE_URL} (bundled static — version ${UAE_LOCAL_VERSION})`,
   };
 }
 

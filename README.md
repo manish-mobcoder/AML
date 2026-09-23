@@ -4,7 +4,7 @@ Internal **person sanctions screening** service. Callers (KanzPay Backend) hit a
 
 > **Screening aid, not a compliance determination.** A hit is a candidate to verify against the official source. `no_match` is never a clearance.
 
-Version **0.1.12** · Apache-2.0 · Bun ≥ 1.3 / Node ≥ 24
+Version **1.0.1** · Apache-2.0 · Bun ≥ 1.3 / Node ≥ 24
 
 This tree started from the open-source [sanctions-screening-mcp-server](https://github.com/cyanheads/sanctions-screening-mcp-server). Production use here is the REST sidecar, not the public npm MCP package.
 
@@ -39,23 +39,25 @@ The process still starts an MCP HTTP server on **3010**. KanzPay does not use it
 
 | Source | Code | Notes |
 |:---|:---|:---|
-| OFAC SDN + Consolidated | `ofac_sdn`, `ofac_consolidated` | US Treasury, public domain |
-| EU Consolidated Financial Sanctions | `eu` | Freely redistributable |
-| UK Sanctions List (UKSL) | `uk` | OGL v3.0 |
-| UN Security Council Consolidated | `un` | Freely redistributable |
-| India UAPA (MHA) | `india_uapa` | OpenSanctions FTM export of the official list |
+| OFAC SDN + Consolidated | `ofac_sdn`, `ofac_consolidated` | US Treasury, public domain — official XML |
+| EU Consolidated Financial Sanctions | `eu` | Freely redistributable — official XML |
+| UK Sanctions List (UKSL) | `uk` | OGL v3.0 — official XML |
+| UN Security Council Consolidated | `un` | Freely redistributable — official XML |
+| India UAPA (MHA) | `india_uapa` | Fetched directly from [mha.gov.in](https://www.mha.gov.in/en/divisionofmha/counter-terrorism-and-counter-radicalization-division/Banned-Organizations) (PDF scrape of Banned Organizations) |
 | India FEO / NIA Most Wanted | `india_watchlist` | Bundled curated file — not a live ED/NIA feed |
-| UAE Local Terrorist List | `uae_local` | OpenSanctions FTM export of the EOCN list |
+| UAE Local Terrorist List | `uae_local` | Bundled static dataset from the official EOCN PDF; refresh with `scripts/import-uae-local.ts` |
 
 GLEIF (legal-entity / ownership) code is still in the tree. This service’s REST path does not need it. Compose sets `SANCTIONS_INIT_SKIP_GLEIF=1`.
 
 India UAPA is **not** the FEO list. Names such as Vijay Mallya sit on `india_watchlist`.
 
+No OpenSanctions (or other CC BY-NC) feeds are used. India and UAE come from official publications only.
+
 ---
 
 ## First run: load the mirror
 
-Lists are **not** in git. Load them once, off the request path:
+OFAC/EU/UK/UN are downloaded at init. India UAPA is scraped from MHA. India watchlist and UAE local are bundled in the repo and ingested from those files.
 
 ```sh
 # Watchlists only (recommended for this service)
@@ -69,6 +71,7 @@ SANCTIONS_INIT_SKIP_GLEIF=1 bun run mirror:init
 | `bun run mirror:verify` | Readiness + per-source counts |
 | `bun run mirror:seed` | Tiny fixture, no downloads |
 | `bun run mirror:load-india-uae` | India + UAE into an existing mirror |
+| `bun run scripts/import-uae-local.ts <pdf>` | Regenerate `uae-local-data.ts` from a new EOCN PDF, then re-run refresh |
 
 Until init finishes, `screen-person` returns an error that the sanctions mirror is not ready.
 
@@ -133,7 +136,7 @@ List feeds are keyless. Only the REST key is a secret.
 | `MCP_HTTP_PORT` | No | `3010` | Health + unused MCP |
 | `MCP_LOG_LEVEL` | No | `info` | |
 
-Source URL overrides (`OFAC_SDN_URL`, …) default to the official feeds. See [`.env.example`](./.env.example).
+Source URL overrides (`OFAC_SDN_URL`, …) default to the official feeds. India UAPA always uses the MHA Banned Organizations page; UAE is the bundled EOCN dataset. See [`.env.example`](./.env.example).
 
 Do not commit `.env`. Put `AML_API_KEY` in the server/CI secret store.
 
@@ -145,8 +148,11 @@ Do not commit `.env`. Put `AML_API_KEY` in the server/CI secret store.
 |:---|:---|
 | `src/http/aml-api.ts` | REST `screen-person` |
 | `src/services/screening/` | Mirror, ingest, matching |
+| `src/services/screening/india-mha-ingest.ts` | MHA UAPA PDF harvest |
+| `src/services/screening/uae-local-data.ts` | Bundled EOCN Local Terrorist List |
 | `src/index.ts` | Boots MCP (3010) then the REST sidecar (3011) |
 | `scripts/mirror-*.ts` | Init / refresh / verify / seed |
+| `scripts/import-uae-local.ts` | Regenerate UAE bundle from an EOCN PDF |
 | `docker-compose.yml` | HTTP stack + `mirror-init` profile |
 
 MCP tools under `src/mcp-server/` still register at process start. They are unused by KanzPay.
@@ -161,9 +167,9 @@ Redistributed open data, cited per source terms:
 - **EU** Consolidated Financial Sanctions List — European Commission / EEAS
 - **UK Sanctions List** — FCDO, [Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/)
 - **UN** Security Council Consolidated List
-- **India UAPA** — MHA via [OpenSanctions](https://www.opensanctions.org/datasets/in_mha_banned/)
+- **India UAPA** — Ministry of Home Affairs (MHA), [Banned Organizations](https://www.mha.gov.in/en/divisionofmha/counter-terrorism-and-counter-radicalization-division/Banned-Organizations)
 - **India FEO / NIA Most Wanted** — curated public sources (not a live bulk feed)
-- **UAE Local Terrorist List** — EOCN via [OpenSanctions](https://www.opensanctions.org/datasets/ae_local_terrorists/)
+- **UAE Local Terrorist List** — EOCN Local Terrorist List (Cabinet Decision publications); bundled from the official PDF
 
 Matching engine originally from Casey Hand (`@cyanheads`); this service uses [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) as a runtime library.
 

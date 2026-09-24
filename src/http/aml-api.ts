@@ -182,6 +182,16 @@ async function screenPerson(input: ScreenPersonRequest) {
   };
 }
 
+/**
+ * Path only (no query string). Deploy / Compose healthchecks hit GET /healthz
+ * on this port (3011), not the MCP server on 3010.
+ */
+function requestPath(url: string | undefined): string {
+  if (!url) return '/';
+  const q = url.indexOf('?');
+  return q === -1 ? url : url.slice(0, q);
+}
+
 export function startAmlApi(): void {
   if (!API_KEY) {
     console.warn(
@@ -191,7 +201,25 @@ export function startAmlApi(): void {
 
   const server = createServer(async (req, res) => {
     try {
-      if (req.method === 'POST' && req.url === '/api/aml/screen-person') {
+      const path = requestPath(req.url);
+
+      // Liveness only — no API key. Mirror readiness is reported but does not
+      // fail the check so deploy succeeds before mirror:init has run.
+      if (req.method === 'GET' && (path === '/healthz' || path === '/health')) {
+        let mirrorReady = false;
+        try {
+          mirrorReady = await getScreeningService().sanctionsReady();
+        } catch {
+          mirrorReady = false;
+        }
+        return json(res, 200, {
+          status: 'ok',
+          service: 'aml-api',
+          mirrorReady,
+        });
+      }
+
+      if (req.method === 'POST' && path === '/api/aml/screen-person') {
         if (API_KEY && !apiKeyValid(req, API_KEY)) {
           return json(res, 401, { error: 'Unauthorized' });
         }

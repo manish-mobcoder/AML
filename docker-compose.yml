@@ -6,7 +6,7 @@
 #   docker compose build
 #   docker compose up -d sanctions
 #   docker compose --profile init run --rm mirror-init
-#   curl -s http://127.0.0.1:3010/healthz
+#   curl -s http://127.0.0.1:3011/healthz
 #   curl -s -X POST http://127.0.0.1:3011/api/aml/screen-person \
 #     -H 'Content-Type: application/json' \
 #     -H "X-API-Key: $AML_API_KEY" \
@@ -20,8 +20,8 @@ services:
     image: sanctions-screening-mcp-server:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3010:3010" # MCP + /healthz
-      - "127.0.0.1:3011:3011" # AML REST  POST /api/aml/screen-person
+      - "127.0.0.1:3010:3010" # MCP HTTP (unused by KanzPay)
+      - "127.0.0.1:3011:3011" # AML REST + GET /healthz
     volumes:
       - sanctions-data:/usr/src/app/data
     environment:
@@ -48,7 +48,7 @@ services:
           "CMD",
           "bun",
           "-e",
-          "fetch('http://127.0.0.1:3010/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:'+(process.env.AML_API_PORT??'3011')+'/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 30s
       timeout: 5s

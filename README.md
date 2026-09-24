@@ -16,7 +16,8 @@ This tree started from the open-source [sanctions-screening-mcp-server](https://
 |:---|:---|
 | Method / path | `POST /api/aml/screen-person` |
 | Default listen | `http://127.0.0.1:3011` (`AML_API_HOST` / `AML_API_PORT`) |
-| Body | `{ "name": string, "dateOfBirth"?: "YYYY-MM-DD", "countryOfBirth"?: string }` — `name` required |
+| Health | `GET /healthz` on **3011** (no API key) — used by deploy + Docker |
+| Body | `{ "name": string, "dateOfBirth"?: "YYYY-MM-DD", "nationality"?: string, … }` — `name` required |
 | Match | Strict person-name match on all loaded watchlists (no fuzzy auto-fallback) |
 | Response | `status`: `potential_match` \| `no_match`; `matchScore` 100 / 80 / 60 / 40 / 0; `matches[]` |
 
@@ -29,7 +30,7 @@ curl -s -X POST http://127.0.0.1:3011/api/aml/screen-person \
   -d '{"name":"Vijay Mallya","dateOfBirth":"1955-12-18","countryOfBirth":"India"}'
 ```
 
-Health (no API key): `GET http://127.0.0.1:3010/healthz`
+Health (no API key): `GET http://127.0.0.1:3011/healthz`
 
 The process still starts an MCP HTTP server on **3010**. KanzPay does not use it. Keep both ports off the public internet.
 
@@ -89,7 +90,7 @@ MCP_TRANSPORT_TYPE=http bun run start:http
 ```
 
 - API: `http://127.0.0.1:3011/api/aml/screen-person`
-- Health: `http://127.0.0.1:3010/healthz`
+- Health: `http://127.0.0.1:3011/healthz`
 
 ```sh
 bun run test
@@ -107,7 +108,7 @@ If the backend is on another machine, change the Compose `ports` lines from `127
 ```sh
 docker compose build
 docker compose up -d sanctions
-curl -s http://127.0.0.1:3010/healthz
+curl -s http://127.0.0.1:3011/healthz
 
 # Once per volume
 docker compose --profile init run --rm mirror-init
@@ -133,7 +134,7 @@ List feeds are keyless. Only the REST key is a secret.
 | `SANCTIONS_MIRROR_PATH` | Persist data | `./data/sanctions.db` | Compose: `/usr/src/app/data/sanctions.db` |
 | `SANCTIONS_INIT_SKIP_GLEIF` | Recommended | unset | `1` = skip GLEIF |
 | `SANCTIONS_REFRESH_CRON` | No | `0 4 * * *` | **Daily 04:00**, not every 4 hours. Needs HTTP transport |
-| `MCP_HTTP_PORT` | No | `3010` | Health + unused MCP |
+| `MCP_HTTP_PORT` | No | `3010` | Unused MCP HTTP (KanzPay uses 3011) |
 | `MCP_LOG_LEVEL` | No | `info` | |
 
 Source URL overrides (`OFAC_SDN_URL`, …) default to the official feeds. India UAPA always uses the MHA Banned Organizations page; UAE is the bundled EOCN dataset. See [`.env.example`](./.env.example).

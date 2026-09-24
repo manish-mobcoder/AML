@@ -7,10 +7,8 @@
  * @module scripts/mirror-load-india-uae
  */
 
-import {
-  buildIndiaUapaIngester,
-  buildUaeLocalIngester,
-} from '@/services/screening/india-uae-ingest.js';
+import { buildIndiaMhaIngester } from '@/services/screening/india-mha-ingest.js';
+import { buildUaeLocalIngester } from '@/services/screening/uae-local-ingest.js';
 import { buildIndiaWatchlistIngester } from '@/services/screening/india-watchlist-ingest.js';
 import type { NormalizedDesignation } from '@/services/screening/types.js';
 import { bootstrap, longRunSignal } from './_mirror-context.js';
@@ -28,7 +26,7 @@ async function main(): Promise<void> {
   const signal = longRunSignal(1);
 
   for (const ingester of [
-    buildIndiaUapaIngester(),
+    buildIndiaMhaIngester(),
     buildIndiaWatchlistIngester(),
     buildUaeLocalIngester(),
   ]) {

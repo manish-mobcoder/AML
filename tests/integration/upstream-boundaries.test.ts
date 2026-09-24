@@ -53,7 +53,9 @@ describe('sanctions source boundaries', () => {
     });
     vi.stubGlobal('fetch', fetch);
 
-    const ingesters = buildSanctionsIngesters();
+    // Only harvest the sources that have a mock body — bundled/page-scrape
+    // sources (india_uapa, india_watchlist, uae_local) are tested separately.
+    const ingesters = buildSanctionsIngesters().filter((i) => sourceBodies.has(i.url()));
     const harvested = await Promise.all(
       ingesters.map(async (ingester) => {
         const records: NormalizedDesignation[] = [];

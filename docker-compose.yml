@@ -6,9 +6,11 @@
 #   docker compose build
 #   docker compose up -d sanctions
 #   docker compose --profile init run --rm mirror-init
-#   curl -s http://127.0.0.1:3010/healthz
+#   curl -s http://127.0.0.1:3011/healthz
 #   curl -s -X POST http://127.0.0.1:3011/api/aml/screen-person \
-#     -H 'Content-Type: application/json' -d '{"name":"Vijay Mallya"}'
+#     -H 'Content-Type: application/json' \
+#     -H "X-API-Key: $AML_API_KEY" \
+#     -d '{"name":"Vijay Mallya"}'
 
 services:
   sanctions:
@@ -18,30 +20,35 @@ services:
     image: sanctions-screening-mcp-server:latest
     restart: unless-stopped
     ports:
-      - "3010:3010" # MCP + /healthz
-      - "3011:3011" # AML REST  POST /api/aml/screen-person
+      - "127.0.0.1:3010:3010" # MCP HTTP (unused by KanzPay)
+      - "127.0.0.1:3011:3011" # AML REST + GET /healthz
     volumes:
       - sanctions-data:/usr/src/app/data
     environment:
       NODE_ENV: production
       MCP_TRANSPORT_TYPE: http
+      # Bind all interfaces inside the container so published ports work.
+      # Host publish stays 127.0.0.1 so the machine does not expose 3010/3011 publicly.
       MCP_HTTP_HOST: "0.0.0.0"
       MCP_HTTP_PORT: "3010"
       MCP_SESSION_MODE: stateless
       MCP_LOG_LEVEL: info
       MCP_AUTH_MODE: none
+      MCP_AUTH_SECRET_KEY: "${MCP_AUTH_SECRET_KEY}"
+      MCP_ALLOWED_ORIGINS: "${MCP_ALLOWED_ORIGINS:-}"
       SANCTIONS_MIRROR_PATH: /usr/src/app/data/sanctions.db
       SANCTIONS_REFRESH_CRON: "0 4 * * *"
       SANCTIONS_INIT_SKIP_GLEIF: "1"
       AML_API_HOST: "0.0.0.0"
       AML_API_PORT: "3011"
+      AML_API_KEY: "${AML_API_KEY:-}"
     healthcheck:
       test:
         [
           "CMD",
           "bun",
           "-e",
-          "fetch('http://127.0.0.1:3010/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:'+(process.env.AML_API_PORT??'3011')+'/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 30s
       timeout: 5s

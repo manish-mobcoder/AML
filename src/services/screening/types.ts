@@ -192,8 +192,52 @@ export interface QueryTokenCoverage {
 /** The two screening match modes. */
 export type MatchMode = 'strict' | 'fuzzy';
 
+/**
+ * How a caller-supplied attribute compares to what a designation record
+ * publishes. Used to corroborate or exculpate a name-based screening hit.
+ *
+ * - `match`         — supplied value agrees with the record (corroborating)
+ * - `mismatch`      — supplied value conflicts with the record (exculpatory)
+ * - `not_provided`  — caller did not supply this attribute (neutral)
+ * - `not_on_record` — designation does not publish this attribute (neutral)
+ */
+export type AttributeSignal = 'match' | 'mismatch' | 'not_provided' | 'not_on_record';
+
+/**
+ * Per-attribute corroboration/exculpation check attached to a screening hit
+ * when the caller supplies at least one of `dateOfBirth`, `nationality`, or
+ * `identifiers` to the `sanctions_screen_name` tool.
+ *
+ * `mismatch` on a field the list entry publishes is the most actionable signal:
+ * a listed person who carries a different DOB or a different passport number
+ * is very likely a different person — the namesake defence. `match` on
+ * identifier is near-decisive in the other direction.
+ */
+export interface AttributeCheck {
+  dob: AttributeSignal;
+  nationality: AttributeSignal;
+  /** Best signal across all supplied identifiers — one exact match is decisive. */
+  identifier: AttributeSignal;
+}
+
+/** Corroborating attributes the caller may supply alongside a name query. */
+export interface AttributeQuery {
+  /** ISO 8601 date of birth or partial (YYYY or YYYY-MM). */
+  dateOfBirth?: string;
+  /** Country name, demonym (e.g. "Jordanian"), or ISO-2 code (e.g. "JO"). */
+  nationality?: string;
+  /** Passport / national-ID / other document numbers to cross-check. */
+  identifiers?: Array<{ type?: string; value: string }>;
+}
+
 /** A scored screening hit returned by the matching engine. */
 export interface ScreeningHit {
+  /**
+   * Corroboration/exculpation signals for caller-supplied attributes (DOB,
+   * nationality, identifiers). Present only when the caller supplied at least
+   * one attribute to the screen_name call.
+   */
+  attributeCheck?: AttributeCheck;
   designationDate?: string;
   /** `{source}:{sourceEntryId}` of the matched designation. */
   designationId: string;

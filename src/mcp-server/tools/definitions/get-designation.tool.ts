@@ -18,6 +18,7 @@ export const getDesignationTool = tool('sanctions_get_designation', {
   description:
     'Fetch the full record for one sanctions designation by source list + entry ID — the drill-in after sanctions_screen_name surfaces a candidate. Returns all published aliases, identifiers (passport/national-ID/tax), addresses, dates and places of birth, nationalities, sanctioning program, legal basis, and designation date. The record reflects exactly what the source published; missing fields mean the source omitted them. This is a screening aid — the designation record supports a compliance review, it is not itself a determination.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  auth: ['tool:sanctions:read'],
   input: z.object({
     source: z
       .enum(SOURCE_CODE_ENUM)

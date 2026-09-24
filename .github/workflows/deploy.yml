@@ -1,0 +1,64 @@
+name: Deploy Sanctions Screening - DEV
+
+on:
+  push:
+    branches:
+      - dev
+
+concurrency:
+  group: sanctions-dev-deployment
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to DEV EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+
+          script: |
+            set -e
+
+            echo "======================================"
+            echo "Sanctions DEV Deployment"
+            echo "======================================"
+
+            cd /var/www/html/sanctions_screening_service
+
+            echo "Fetching latest code..."
+            git fetch origin
+
+            echo "Checking out dev..."
+            git checkout dev
+
+            echo "Updating to origin/dev..."
+            git reset --hard origin/dev
+
+            echo "Deployed commit:"
+            git rev-parse --short HEAD
+
+            echo "Building Docker image..."
+            docker compose build sanctions
+
+            echo "Starting sanctions service..."
+            docker compose up -d sanctions
+
+            echo "Waiting for application..."
+            sleep 10
+
+            echo "Container status:"
+            docker compose ps sanctions
+
+            echo "Health check..."
+            curl --fail http://127.0.0.1:3011/healthz
+
+            echo "======================================"
+            echo "Deployment successful"
+            echo "======================================"

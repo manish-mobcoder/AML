@@ -30,7 +30,7 @@ jobs:
             echo "Sanctions PROD Deployment"
             echo "======================================"
 
-            cd /var/www/html/sanctions_screening_service
+            cd /var/www/html/AML
 
             echo "Fetching latest code..."
             git fetch origin

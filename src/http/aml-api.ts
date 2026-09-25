@@ -45,7 +45,7 @@ interface ScreenPersonRequest {
    * analyst via `sanctions_clear_hit` are suppressed from results.
    */
   customerRef?: string;
-  /** 'strict' (default) or 'fuzzy'. Strict auto-falls back to fuzzy when empty. */
+  /** 'strict' (default) or 'fuzzy'. Strict does NOT auto-fall back to fuzzy. */
   matchMode?: 'strict' | 'fuzzy';
 }
 
@@ -128,10 +128,17 @@ async function screenPerson(input: ScreenPersonRequest) {
     ...(input.identifiers ?? []).map((id) => ({ type: id.type ?? 'ID', value: id.value })),
   ];
 
+  const matchMode = input.matchMode ?? 'strict';
+  
   const result = await svc.screenName(
     {
       query: input.name,
       entityType: 'person',
+      matchMode,
+      // Production REST must not auto-upgrade empty strict → fuzzy: a near-miss
+      // spelling (e.g. "Malya" vs "Mallya") otherwise floods with unranked OFAC
+      // token noise. Callers who want fuzzy pass matchMode: "fuzzy" explicitly.
+      autoFallback: false,
       matchMode: input.matchMode ?? 'strict',
       sources: SOURCE_CODES,
       limit: 100,

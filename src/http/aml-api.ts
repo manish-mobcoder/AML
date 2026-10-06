@@ -139,7 +139,6 @@ async function screenPerson(input: ScreenPersonRequest) {
       // spelling (e.g. "Malya" vs "Mallya") otherwise floods with unranked OFAC
       // token noise. Callers who want fuzzy pass matchMode: "fuzzy" explicitly.
       autoFallback: false,
-      matchMode: input.matchMode ?? 'strict',
       sources: SOURCE_CODES,
       limit: 100,
       offset: 0,

@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { getScreeningService } from '@/services/screening/screening-service.js';
 import type { AttributeCheck } from '@/services/screening/types.js';
 import { SOURCE_LABELS, type SourceCode } from '@/services/screening/types.js';
+import { openApiDocument, swaggerUiHtml } from './openapi.js';
 
 const PORT = Number(process.env.AML_API_PORT ?? 3011);
 const HOST = process.env.AML_API_HOST ?? '127.0.0.1';
@@ -45,13 +46,18 @@ interface ScreenPersonRequest {
    * analyst via `sanctions_clear_hit` are suppressed from results.
    */
   customerRef?: string;
-  /** 'strict' (default) or 'fuzzy'. Strict auto-falls back to fuzzy when empty. */
+  /** 'strict' (default) or 'fuzzy'. Strict does NOT auto-fall back to fuzzy. */
   matchMode?: 'strict' | 'fuzzy';
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body, null, 2));
+}
+
+function html(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(body);
 }
 
 async function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -128,11 +134,17 @@ async function screenPerson(input: ScreenPersonRequest) {
     ...(input.identifiers ?? []).map((id) => ({ type: id.type ?? 'ID', value: id.value })),
   ];
 
+  const matchMode = input.matchMode ?? 'strict';
+  
   const result = await svc.screenName(
     {
       query: input.name,
       entityType: 'person',
-      matchMode: input.matchMode ?? 'strict',
+      matchMode,
+      // Production REST must not auto-upgrade empty strict → fuzzy: a near-miss
+      // spelling (e.g. "Malya" vs "Mallya") otherwise floods with unranked OFAC
+      // token noise. Callers who want fuzzy pass matchMode: "fuzzy" explicitly.
+      autoFallback: false,
       sources: SOURCE_CODES,
       limit: 100,
       offset: 0,
@@ -202,6 +214,14 @@ export function startAmlApi(): void {
   const server = createServer(async (req, res) => {
     try {
       const path = requestPath(req.url);
+
+      // OpenAPI / Swagger UI — no API key.
+      if (req.method === 'GET' && path === '/openapi.json') {
+        return json(res, 200, openApiDocument);
+      }
+      if (req.method === 'GET' && (path === '/docs' || path === '/swagger')) {
+        return html(res, 200, swaggerUiHtml);
+      }
 
       // Liveness only — no API key. Mirror readiness is reported but does not
       // fail the check so deploy succeeds before mirror:init has run.
